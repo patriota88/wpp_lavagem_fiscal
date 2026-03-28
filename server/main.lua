@@ -10,7 +10,25 @@ local CHANCE_ALERTA = 15
 -- Aumente apenas se o ponto de interação estiver "largo" no seu mapa.
 local DISTANCIA_MAX_COFRE = 4.0
 
-local function GetFramework()
+-- [Compatibilidade Multi-Framework - Servidor]
+-- Este bloco torna o arquivo universal para QBCore, Qbox e MRI-Qbox.
+-- A deteccao segue Config.Framework e, no modo auto, tenta:
+-- qbit-core -> qbx_core -> qb-core.
+local function DetectFramework()
+	local configured = string.lower(tostring((Config and Config.Framework) or 'auto'))
+
+	if configured == 'qbox' or configured == 'mri-qbox' or configured == 'mri_qbox' then
+		return 'qbox'
+	end
+
+	if configured == 'qbcore' or configured == 'qb-core' then
+		return 'qbcore'
+	end
+
+	if GetResourceState('qbit-core') == 'started' then
+		return 'qbox'
+	end
+
 	if GetResourceState('qbx_core') == 'started' then
 		return 'qbox'
 	end
@@ -22,8 +40,8 @@ local function GetFramework()
 	return 'none'
 end
 
-local FRAMEWORK = GetFramework()
-local QBCore = FRAMEWORK == 'qbcore' and exports['qb-core']:GetCoreObject() or nil
+local FRAMEWORK = DetectFramework()
+local QBCore = FRAMEWORK == 'qbcore' and GetResourceState('qb-core') == 'started' and exports['qb-core']:GetCoreObject() or nil
 
 local function Notify(src, message, nType)
 	TriggerClientEvent('ox_lib:notify', src, {
@@ -35,6 +53,26 @@ local function Notify(src, message, nType)
 	if FRAMEWORK == 'qbcore' then
 		TriggerClientEvent('QBCore:Notify', src, message, nType or 'primary')
 	end
+end
+
+local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+	-- Guia de customizacao:
+	-- Prioriza Config.OrganizacoesPermitidas para facilitar manutenção entre bases.
+	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
+		return Config.OrganizacoesPermitidas[empresaId]
+	end
+
+	return empresaConfig and empresaConfig.job or nil
+end
+
+local function GetRanksPermitidos(empresaId, empresaConfig)
+	-- Guia de customizacao:
+	-- Prioriza Config.RanksPermitidos e preserva fallback legado por empresa.
+	if Config and Config.RanksPermitidos and Config.RanksPermitidos[empresaId] then
+		return Config.RanksPermitidos[empresaId]
+	end
+
+	return (empresaConfig and empresaConfig.gradesPermitidos) or {}
 end
 
 local function GetPlayerObject(src)
@@ -49,13 +87,65 @@ local function GetPlayerObject(src)
 	return nil
 end
 
-local function GetJobName(src)
+local function GetPlayerData(src)
+	-- [Bridge de PlayerData]
+	-- Todas as validacoes server-side usam esta funcao para manter consistencia.
 	local player = GetPlayerObject(src)
-	if not player or not player.PlayerData or not player.PlayerData.job then
+	if not player then
 		return nil
 	end
 
-	return player.PlayerData.job.name
+	return player.PlayerData
+end
+
+local function GetPlayerJobData(src)
+	local playerData = GetPlayerData(src)
+	if not playerData or not playerData.job then
+		return nil, nil
+	end
+
+	local job = playerData.job
+	local jobName = job.name
+	local gradeValue = nil
+
+	if type(job.grade) == 'table' then
+		gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	else
+		gradeValue = job.grade
+	end
+
+	if gradeValue == nil and job.gradeLevel ~= nil then
+		gradeValue = job.gradeLevel
+	end
+
+	if gradeValue == nil and job.grade_name ~= nil then
+		gradeValue = job.grade_name
+	end
+
+	return jobName, gradeValue
+end
+
+local function IsGradePermitido(ranksPermitidos, gradeValue)
+	local gradeString = tostring(gradeValue or '')
+	local grade2 = tonumber(gradeValue) and string.format('%02d', tonumber(gradeValue)) or gradeString
+
+	for _, permitido in ipairs(ranksPermitidos or {}) do
+		local expected = tostring(permitido)
+		if expected == gradeString or expected == grade2 then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function GetJobName(src)
+	local playerData = GetPlayerData(src)
+	if not playerData or not playerData.job then
+		return nil
+	end
+
+	return playerData.job.name
 end
 
 local function IsPoliceJob(jobName)
@@ -201,7 +291,7 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
 
 	if FRAMEWORK == 'none' then
-		Notify(src, 'Nenhum framework compativel encontrado (Qbox/QB-Core).', 'error')
+		Notify(src, 'Nenhum framework compativel encontrado (Qbox/MRI-Qbox/QB-Core).', 'error')
 		return
 	end
 
@@ -216,9 +306,19 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 		return
 	end
 
-	local jobName = GetJobName(src)
-	if jobName ~= empresaConfig.job then
+	-- [Seguranca de Servidor - Job/Rank]
+	-- Toda autorizacao e feita com source real no servidor.
+	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
+	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
+	local jobName, gradeValue = GetPlayerJobData(src)
+
+	if jobName ~= jobPermitido then
 		Notify(src, 'Seu emprego nao tem permissao para usar este cofre.', 'error')
+		return
+	end
+
+	if not IsGradePermitido(ranksPermitidos, gradeValue) then
+		Notify(src, 'Seu cargo nao possui permissao para operar este cofre.', 'error')
 		return
 	end
 

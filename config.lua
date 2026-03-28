@@ -1,6 +1,13 @@
 ---@diagnostic disable: undefined-global
 Config = Config or {}
 
+-- Framework alvo do recurso.
+-- Opcoes:
+--   'auto'   -> detecta automaticamente entre qbit-core, qbx_core e qb-core
+--   'qbox'   -> forca bridge qbox/mri-qbox (exports.qbx_core)
+--   'qbcore' -> forca bridge qb-core
+Config.Framework = 'auto'
+
 -- Ative para exibir logs detalhados no console do servidor.
 Config.Debug = false
 
@@ -15,6 +22,32 @@ Config.TaxaEmpresa = 0.25
 
 -- Nome do item físico necessário no inventário para abrir o tablet.
 Config.ItemTablet = 'tablet_fiscal'
+
+-- Mapa de organizacoes permitidas por empresa do sistema.
+-- Chave: empresaId (a mesma chave usada em Config.Empresas)
+-- Valor: nome do job que pode operar aquela empresa
+--
+-- Observacao para devs:
+-- 1) Este mapa tem prioridade na validacao de permissao.
+-- 2) Se uma empresa nao existir aqui, o script usa fallback de Config.Empresas[empresaId].job.
+Config.OrganizacoesPermitidas = {
+	casino = 'casino',
+	oficina_norte = 'oficina_norte',
+	restaurante_pearls = 'restaurante_pearls'
+}
+
+-- Mapa de ranks/grades permitidos por empresa.
+-- Chave: empresaId
+-- Valor: lista de grades aceitas (string ou numero).
+--
+-- Observacao para devs:
+-- 1) Este mapa tem prioridade sobre Config.Empresas[empresaId].gradesPermitidos.
+-- 2) A comparacao no codigo normaliza formatos como "01", "1" e 1.
+Config.RanksPermitidos = {
+	casino = { '01', '02' },
+	oficina_norte = { '01', '02' },
+	restaurante_pearls = { '01', '02' }
+}
 
 -- Cadastro das empresas participantes do sistema.
 Config.Empresas = {

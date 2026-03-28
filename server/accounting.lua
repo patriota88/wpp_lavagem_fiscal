@@ -1,15 +1,36 @@
 ---@diagnostic disable: undefined-global
 
-local FRAMEWORK = 'none'
-local QBCore = nil
+-- [Compatibilidade Multi-Framework - Servidor]
+-- Este arquivo trata permissões sensíveis (consulta/saque), então o bridge
+-- precisa refletir exatamente a mesma estratégia em QBCore, Qbox e MRI-Qbox.
+local function DetectFramework()
+	local configured = string.lower(tostring((Config and Config.Framework) or 'auto'))
 
--- Bridge mínima de framework para manter compatibilidade com Qbox e QB-Core.
-if GetResourceState('qbx_core') == 'started' then
-	FRAMEWORK = 'qbox'
-elseif GetResourceState('qb-core') == 'started' then
-	FRAMEWORK = 'qbcore'
-	QBCore = exports['qb-core']:GetCoreObject()
+	if configured == 'qbox' or configured == 'mri-qbox' or configured == 'mri_qbox' then
+		return 'qbox'
+	end
+
+	if configured == 'qbcore' or configured == 'qb-core' then
+		return 'qbcore'
+	end
+
+	if GetResourceState('qbit-core') == 'started' then
+		return 'qbox'
+	end
+
+	if GetResourceState('qbx_core') == 'started' then
+		return 'qbox'
+	end
+
+	if GetResourceState('qb-core') == 'started' then
+		return 'qbcore'
+	end
+
+	return 'none'
 end
+
+local FRAMEWORK = DetectFramework()
+local QBCore = FRAMEWORK == 'qbcore' and GetResourceState('qb-core') == 'started' and exports['qb-core']:GetCoreObject() or nil
 
 local function IsDebugEnabled()
 	return Config and Config.Debug == true
@@ -33,6 +54,24 @@ local function Notify(src, message, nType)
 	end
 end
 
+local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+	-- Prioriza tabela nova de organização permitida por empresa.
+	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
+		return Config.OrganizacoesPermitidas[empresaId]
+	end
+
+	return empresaConfig and empresaConfig.job or nil
+end
+
+local function GetRanksPermitidos(empresaId, empresaConfig)
+	-- Prioriza tabela nova de ranks e mantém fallback legado.
+	if Config and Config.RanksPermitidos and Config.RanksPermitidos[empresaId] then
+		return Config.RanksPermitidos[empresaId]
+	end
+
+	return (empresaConfig and empresaConfig.gradesPermitidos) or {}
+end
+
 local function GetPlayerObject(src)
 	if FRAMEWORK == 'qbox' then
 		return exports.qbx_core:GetPlayer(src)
@@ -45,18 +84,30 @@ local function GetPlayerObject(src)
 	return nil
 end
 
+local function GetPlayerData(src)
+	-- [Bridge de PlayerData]
+	-- Uniformiza o acesso a dados de personagem para validacao de seguranca.
+	local player = GetPlayerObject(src)
+	if not player then
+		return nil
+	end
+
+	return player.PlayerData
+end
+
 local function GetPlayerName(player)
-	if not player or not player.PlayerData then
+	local playerData = player and player.PlayerData or nil
+	if not playerData then
 		return 'Desconhecido'
 	end
 
-	local charinfo = player.PlayerData.charinfo or {}
+	local charinfo = playerData.charinfo or {}
 	local firstname = charinfo.firstname or ''
 	local lastname = charinfo.lastname or ''
 	local fullName = (firstname .. ' ' .. lastname):gsub('^%s+', ''):gsub('%s+$', '')
 
 	if fullName == '' then
-		return player.PlayerData.name or 'Desconhecido'
+		return playerData.name or 'Desconhecido'
 	end
 
 	return fullName
@@ -79,6 +130,33 @@ local function GetPlayerJobData(player)
 		else
 			gradeValue = job.grade
 		end
+	end
+
+	if gradeValue == nil and job.gradeLevel ~= nil then
+		gradeValue = job.gradeLevel
+	end
+
+	if gradeValue == nil and job.grade_name ~= nil then
+		gradeValue = job.grade_name
+	end
+
+	return jobName, gradeValue
+end
+
+local function GetPlayerJobDataBySource(src)
+	local playerData = GetPlayerData(src)
+	if not playerData or not playerData.job then
+		return nil, nil
+	end
+
+	local job = playerData.job
+	local jobName = job.name
+	local gradeValue = nil
+
+	if type(job.grade) == 'table' then
+		gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	else
+		gradeValue = job.grade
 	end
 
 	if gradeValue == nil and job.gradeLevel ~= nil then
@@ -122,8 +200,8 @@ local function IsPoliceOnDuty(player)
 	return job.onduty == true
 end
 
-local function IsGradePermitido(empresaConfig, gradeValue)
-	local permitidos = empresaConfig and empresaConfig.gradesPermitidos or {}
+local function IsGradePermitido(ranksPermitidos, gradeValue)
+	local permitidos = ranksPermitidos or {}
 	-- Permite comparação em múltiplos formatos: "01", "1", 1.
 	local gradeString = tostring(gradeValue or '')
 	local grade2 = tonumber(gradeValue) and string.format('%02d', tonumber(gradeValue)) or gradeString
@@ -293,7 +371,7 @@ lib.callback.register('wpp_lavagem_fiscal:server:getEmpresaDados', function(sour
 	if FRAMEWORK == 'none' then
 		return {
 			ok = false,
-			message = 'Framework incompativel. Necessario Qbox ou QB-Core.'
+			message = 'Framework incompativel. Necessario Qbox/MRI-Qbox ou QB-Core.'
 		}
 	end
 
@@ -312,15 +390,18 @@ lib.callback.register('wpp_lavagem_fiscal:server:getEmpresaDados', function(sour
 		}
 	end
 
-	local jobName, gradeValue = GetPlayerJobData(player)
-	if jobName ~= empresaConfig.job then
+	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
+	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
+
+	local jobName, gradeValue = GetPlayerJobDataBySource(src)
+	if jobName ~= jobPermitido then
 		return {
 			ok = false,
 			message = 'Sem permissao para visualizar os dados desta empresa.'
 		}
 	end
 
-	if not IsGradePermitido(empresaConfig, gradeValue) then
+	if not IsGradePermitido(ranksPermitidos, gradeValue) then
 		return {
 			ok = false,
 			message = 'Acesso restrito aos cargos de diretoria.'
@@ -344,7 +425,7 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendos', function(empresaId
 	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
 
 	if FRAMEWORK == 'none' then
-		Notify(src, 'Framework incompativel. Necessario Qbox ou QB-Core.', 'error')
+		Notify(src, 'Framework incompativel. Necessario Qbox/MRI-Qbox ou QB-Core.', 'error')
 		return
 	end
 
@@ -359,13 +440,18 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendos', function(empresaId
 		return
 	end
 
-	local jobName, gradeValue = GetPlayerJobData(player)
-	if jobName ~= empresaConfig.job then
+	-- [Seguranca de Servidor]
+	-- Esta trava valida o jogador real (source) no servidor, impedindo bypass por NUI.
+	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
+	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
+
+	local jobName, gradeValue = GetPlayerJobDataBySource(src)
+	if jobName ~= jobPermitido then
 		Notify(src, 'Seu emprego nao pertence a esta empresa.', 'error')
 		return
 	end
 
-	if not IsGradePermitido(empresaConfig, gradeValue) then
+	if not IsGradePermitido(ranksPermitidos, gradeValue) then
 		Notify(src, 'Somente diretoria (cargos 01 e 02) pode sacar dividendos.', 'error')
 		return
 	end
@@ -428,7 +514,7 @@ RegisterCommand('relatoriofiscal', function(source)
 	end
 
 	if FRAMEWORK == 'none' then
-		Notify(src, 'Framework incompativel. Necessario Qbox ou QB-Core.', 'error')
+		Notify(src, 'Framework incompativel. Necessario Qbox/MRI-Qbox ou QB-Core.', 'error')
 		return
 	end
 

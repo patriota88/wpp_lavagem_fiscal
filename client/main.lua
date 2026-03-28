@@ -9,9 +9,122 @@ local targetZones = {}
 local nuiOpen = false
 local tabletEntity = nil
 
+-- [Compatibilidade Multi-Framework]
+-- Este bloco centraliza a escolha do core para permitir o mesmo script em:
+-- 1) QBCore (qb-core)
+-- 2) Qbox
+-- 3) MRI-Qbox (detecção via qbit-core, bridge via exports.qbx_core)
+--
+-- Como funciona:
+-- - Config.Framework = 'auto': tenta qbit-core -> qbx_core -> qb-core.
+-- - Config.Framework = 'qbox': força bridge qbox/mri-qbox.
+-- - Config.Framework = 'qbcore': força bridge qb-core.
+local function DetectFramework()
+	local configured = string.lower(tostring((Config and Config.Framework) or 'auto'))
+
+	if configured == 'qbox' or configured == 'mri-qbox' or configured == 'mri_qbox' then
+		return 'qbox'
+	end
+
+	if configured == 'qbcore' or configured == 'qb-core' then
+		return 'qbcore'
+	end
+
+	if GetResourceState('qbit-core') == 'started' then
+		return 'qbox'
+	end
+
+	if GetResourceState('qbx_core') == 'started' then
+		return 'qbox'
+	end
+
+	if GetResourceState('qb-core') == 'started' then
+		return 'qbcore'
+	end
+
+	return 'none'
+end
+
+local FRAMEWORK = DetectFramework()
 local QBCore = nil
-if GetResourceState('qb-core') == 'started' then
+if FRAMEWORK == 'qbcore' and GetResourceState('qb-core') == 'started' then
 	QBCore = exports['qb-core']:GetCoreObject()
+end
+
+local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+	-- Prioriza a tabela nova de compatibilidade e mantém fallback legado.
+	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
+		return Config.OrganizacoesPermitidas[empresaId]
+	end
+
+	return empresaConfig and empresaConfig.job or nil
+end
+
+local function GetRanksPermitidos(empresaId, empresaConfig)
+	-- Prioriza a tabela nova de compatibilidade e mantém fallback legado.
+	if Config and Config.RanksPermitidos and Config.RanksPermitidos[empresaId] then
+		return Config.RanksPermitidos[empresaId]
+	end
+
+	return (empresaConfig and empresaConfig.gradesPermitidos) or {}
+end
+
+local function GetPlayerData()
+	-- [Bridge de PlayerData]
+	-- Mantém uma API única para o restante do script, independente da base.
+	if FRAMEWORK == 'qbox' then
+		local ok, data = pcall(function()
+			return exports.qbx_core:GetPlayerData()
+		end)
+		if ok and type(data) == 'table' then
+			return data
+		end
+	end
+
+	if FRAMEWORK == 'qbcore' and QBCore and QBCore.Functions and QBCore.Functions.GetPlayerData then
+		local ok, data = pcall(function()
+			return QBCore.Functions.GetPlayerData()
+		end)
+		if ok and type(data) == 'table' then
+			return data
+		end
+	end
+
+	-- Fallback runtime para bases custom que sincronizam dados no state bag.
+	if LocalPlayer and LocalPlayer.state then
+		return {
+			job = LocalPlayer.state.job,
+			items = LocalPlayer.state.items
+		}
+	end
+
+	return nil
+end
+
+local function HasItem(itemName)
+	-- [Bridge de Inventário]
+	-- Padrão oficial: ox_inventory (mantido por compatibilidade total entre bases).
+	-- Fallback: consulta item via dados do framework apenas para cenários custom.
+	if GetResourceState('ox_inventory') == 'started' then
+		local count = exports.ox_inventory:Search('count', itemName) or 0
+		return count > 0
+	end
+
+	local playerData = GetPlayerData()
+	local items = playerData and playerData.items or nil
+	if type(items) ~= 'table' then
+		return false
+	end
+
+	for _, item in pairs(items) do
+		local name = item and (item.name or item.item)
+		local amount = tonumber(item and (item.amount or item.count)) or 0
+		if name == itemName and amount > 0 then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function Notify(message, nType)
@@ -21,26 +134,15 @@ local function Notify(message, nType)
 		type = nType or 'inform'
 	})
 
-	if QBCore then
+	if FRAMEWORK == 'qbcore' and QBCore then
 		TriggerEvent('QBCore:Notify', message, nType or 'primary')
 	end
 end
 
 local function GetPlayerJobData()
-	-- Ordem de leitura de dados do job:
-	-- 1) LocalPlayer.state (mais estável no runtime)
-	-- 2) QBCore fallback
-	-- 3) QBX global fallback
-	local job = LocalPlayer and LocalPlayer.state and LocalPlayer.state.job or nil
-
-	if not job and QBCore then
-		local playerData = QBCore.Functions.GetPlayerData()
-		job = playerData and playerData.job or nil
-	end
-
-	if not job and QBX and QBX.PlayerData then
-		job = QBX.PlayerData.job
-	end
+	-- Dados do job sempre passam pela bridge única GetPlayerData().
+	local playerData = GetPlayerData()
+	local job = playerData and playerData.job or nil
 
 	if not job then
 		return nil, nil
@@ -66,12 +168,12 @@ local function GetPlayerJobData()
 	return jobName, gradeValue
 end
 
-local function IsGradePermitido(empresaConfig, gradeValue)
+local function IsGradePermitido(ranksPermitidos, gradeValue)
 	-- Aceita tanto "01/02" quanto "1/2" conforme variação entre frameworks.
 	local gradeString = tostring(gradeValue or '')
 	local grade2 = tonumber(gradeValue) and string.format('%02d', tonumber(gradeValue)) or gradeString
 
-	for _, permitido in ipairs(empresaConfig.gradesPermitidos or {}) do
+	for _, permitido in ipairs(ranksPermitidos or {}) do
 		local expected = tostring(permitido)
 		if expected == gradeString or expected == grade2 then
 			return true
@@ -89,26 +191,23 @@ local function PodeAbrirTablet(empresaId)
 		return false
 	end
 
+	local jobPermitido = GetEmpresaJobPermitido(empresaId, empresaConfig)
+	local ranksPermitidos = GetRanksPermitidos(empresaId, empresaConfig)
+
 	local jobName, gradeValue = GetPlayerJobData()
-	if not jobName or jobName ~= empresaConfig.job then
+	if not jobName or jobName ~= jobPermitido then
 		return false
 	end
 
-	return IsGradePermitido(empresaConfig, gradeValue)
+	return IsGradePermitido(ranksPermitidos, gradeValue)
 end
 
 local function TemItemTabletFiscal()
 	local itemName = (Config and Config.ItemTablet) or 'tablet_fiscal'
 
-	if GetResourceState('ox_inventory') ~= 'started' then
-		return false
-	end
-
 	-- VERIFICACAO DE INVENTARIO (ADS):
-	-- Aqui checamos no ox_inventory se o jogador tem ao menos 1 unidade do item
-	-- configurado em Config.ItemTablet antes de liberar o acesso ao sistema.
-	local count = exports.ox_inventory:Search('count', itemName) or 0
-	return count > 0
+	-- O helper HasItem prioriza ox_inventory e mantém fallback de framework.
+	return HasItem(itemName)
 end
 
 local function StopTabletAnimation()
