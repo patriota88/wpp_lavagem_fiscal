@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Tablet Fiscal</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+<body>
+	<main id="app" class="app hidden" aria-hidden="true">
+		<section class="tablet-shell" role="dialog" aria-label="Tablet Fiscal">
+			<button id="closeButton" class="close-button" type="button" aria-label="Fechar tablet">X</button>
+
+			<!-- INICIO: CABECALHO DO DASHBOARD -->
+			<header class="header">
+				<p class="kicker">WPP LAVAGEM FISCAL</p>
+				<h1 id="empresaNome">Empresa</h1>
+			</header>
+
+			<!-- INICIO: CARD DE SALDO DISPONIVEL -->
+			<section class="balance-card" aria-label="Saldo disponivel para saque">
+				<p class="label">Saldo Disponivel para Saque</p>
+				<p id="saldoValor" class="value">$0</p>
+			</section>
+
+			<!-- INICIO: TABELA DE FUNCIONARIOS FANTASMAS -->
+			<section class="table-section" aria-label="Relatorio de funcionarios fantasmas">
+				<div class="table-title-row">
+					<h2>Funcionarios Fantasmas</h2>
+					<span class="table-subtitle">Ultima distribuicao registrada</span>
+				</div>
+
+				<div class="table-wrapper">
+					<table>
+						<thead>
+							<tr>
+								<th>Nome</th>
+								<th>Pagamento</th>
+							</tr>
+						</thead>
+						<tbody id="funcionariosTableBody">
+							<tr>
+								<td colspan="2" class="empty-row">Sem dados no momento.</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<!-- INICIO: ACOES DO DASHBOARD -->
+			<footer class="actions">
+				<button id="withdrawButton" class="withdraw-button" type="button">
+					Realizar Saque de Dividendos
+				</button>
+			</footer>
+		</section>
+	</main>
+
+	<script src="script.js"></script>
+</body>
+</html>
