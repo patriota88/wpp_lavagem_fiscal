@@ -23,13 +23,16 @@ Config.TaxaEmpresa = 0.25
 -- Nome do item físico necessário no inventário para abrir o tablet.
 Config.ItemTablet = 'tablet_fiscal'
 
+-- Nível mínimo na hierarquia da gangue (ex: Subchefe/02) para conseguir acessar o tablet da empresa.
+Config.NivelMinimoGerencia = 3
+
 -- Mapa de organizacoes permitidas por empresa do sistema.
 -- Chave: empresaId (a mesma chave usada em Config.Empresas)
--- Valor: nome do job que pode operar aquela empresa
+-- Valor: nome do gang que pode operar aquela empresa
 --
 -- Observacao para devs:
 -- 1) Este mapa tem prioridade na validacao de permissao.
--- 2) Se uma empresa nao existir aqui, o script usa fallback de Config.Empresas[empresaId].job.
+-- 2) Se uma empresa nao existir aqui, o script usa fallback de Config.Empresas[empresaId].gang.
 Config.OrganizacoesPermitidas = {
 	casino = 'casino',
 	oficina_norte = 'oficina_norte',
@@ -52,8 +55,8 @@ Config.RanksPermitidos = {
 -- Cadastro das empresas participantes do sistema.
 Config.Empresas = {
 	casino = {
-		-- Job que representa a empresa.
-		job = 'casino',
+		-- gang que representa a empresa.
+		gang = 'casino',
 		-- Níveis autorizados a usar o tablet.
 		gradesPermitidos = { '01', '02' },
 		-- Coordenada do cofre financeiro da empresa.
@@ -61,13 +64,13 @@ Config.Empresas = {
 	},
 
 	oficina_norte = {
-		job = 'oficina_norte',
+		gang = 'oficina_norte',
 		gradesPermitidos = { '01', '02' },
 		cofre = vector3(117.24, 6610.92, 31.87)
 	},
 
 	restaurante_pearls = {
-		job = 'restaurante_pearls',
+		gang = 'restaurante_pearls',
 		gradesPermitidos = { '01', '02' },
 		cofre = vector3(-1826.85, -1195.88, 14.31)
 	}

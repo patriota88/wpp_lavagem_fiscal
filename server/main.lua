@@ -55,14 +55,14 @@ local function Notify(src, message, nType)
 	end
 end
 
-local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+local function GetEmpresagangPermitido(empresaId, empresaConfig)
 	-- Guia de customizacao:
 	-- Prioriza Config.OrganizacoesPermitidas para facilitar manutenção entre bases.
 	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
 		return Config.OrganizacoesPermitidas[empresaId]
 	end
 
-	return empresaConfig and empresaConfig.job or nil
+	return empresaConfig and empresaConfig.gang or nil
 end
 
 local function GetRanksPermitidos(empresaId, empresaConfig)
@@ -98,31 +98,147 @@ local function GetPlayerData(src)
 	return player.PlayerData
 end
 
-local function GetPlayerJobData(src)
+local function GetPlayerCitizenId(src)
 	local playerData = GetPlayerData(src)
-	if not playerData or not playerData.job then
+	if not playerData then
+		return nil
+	end
+
+	if type(playerData.citizenid) == 'string' and playerData.citizenid ~= '' then
+		return playerData.citizenid
+	end
+
+	if type(playerData.citizenId) == 'string' and playerData.citizenId ~= '' then
+		return playerData.citizenId
+	end
+
+	return nil
+end
+
+local function GetPlayerNomeExato(src)
+	-- Nome exato usado na auditoria do relatório fiscal.
+	local playerData = GetPlayerData(src)
+	if playerData then
+		local charinfo = playerData.charinfo or {}
+		local firstname = tostring(charinfo.firstname or '')
+		local lastname = tostring(charinfo.lastname or '')
+		local fullName = (firstname .. ' ' .. lastname):gsub('^%s+', ''):gsub('%s+$', '')
+
+		if fullName ~= '' then
+			return fullName
+		end
+
+		if type(playerData.name) == 'string' and playerData.name ~= '' then
+			return playerData.name
+		end
+	end
+
+	return GetPlayerName(src) or 'Desconhecido'
+end
+
+local function GetEmpresaIdPorgang(gangName)
+	local gangProcurado = tostring(gangName or '')
+	if gangProcurado == '' then
+		return nil
+	end
+
+	for empresaId, empresaConfig in pairs(Config.Empresas or {}) do
+		if GetEmpresagangPermitido(empresaId, empresaConfig) == gangProcurado then
+			return empresaId
+		end
+	end
+
+	return nil
+end
+
+local function GetSourceFromInventory(inventory)
+	if type(inventory) == 'number' then
+		return inventory
+	end
+
+	if type(inventory) == 'table' then
+		if tonumber(inventory.id) then
+			return tonumber(inventory.id)
+		end
+
+		if tonumber(inventory.source) then
+			return tonumber(inventory.source)
+		end
+
+		if tonumber(inventory.owner) then
+			return tonumber(inventory.owner)
+		end
+	end
+
+	return nil
+end
+
+local function GetEmpresaIdPorDono(citizenId)
+	local dono = tostring(citizenId or '')
+	if dono == '' then
+		return nil
+	end
+
+	local row = MySQL.single.await(
+		'SELECT empresa_id FROM wpp_lavagem_status WHERE dono_identifier = ? LIMIT 1',
+		{ dono }
+	)
+
+	local empresaId = row and row.empresa_id or nil
+	print(('--- [DEBUG] Resultado banco (empresa por dono_identifier): %s ---'):format(tostring(empresaId)))
+	return empresaId
+end
+
+-- Valida dono direto no banco para o cofre acessado.
+-- Regra: empresa_id deve existir e dono_identifier deve bater com o citizenid atual.
+function IsJogadorDonoDaEmpresa(src, empresaId)
+	local empresaKey = tostring(empresaId or '')
+	if empresaKey == '' then
+		return false
+	end
+
+	local citizenId = GetPlayerCitizenId(src)
+	if not citizenId then
+		return false
+	end
+
+	local row = MySQL.single.await(
+		'SELECT dono_identifier FROM wpp_lavagem_status WHERE empresa_id = ? LIMIT 1',
+		{ empresaKey }
+	)
+
+	if not row or type(row.dono_identifier) ~= 'string' or row.dono_identifier == '' then
+		return false
+	end
+
+	return row.dono_identifier == citizenId
+end
+
+local function GetPlayergangData(src)
+	local playerData = GetPlayerData(src)
+	if not playerData or not playerData.gang then
 		return nil, nil
 	end
 
-	local job = playerData.job
-	local jobName = job.name
+	local gang = playerData.gang
+	local gangName = gang.name
 	local gradeValue = nil
 
-	if type(job.grade) == 'table' then
-		gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	if type(gang.grade) == 'table' then
+		gradeValue = gang.grade.level or gang.grade.grade or gang.grade.name
 	else
-		gradeValue = job.grade
+		gradeValue = gang.grade
 	end
 
-	if gradeValue == nil and job.gradeLevel ~= nil then
-		gradeValue = job.gradeLevel
+	if gradeValue == nil and gang.gradeLevel ~= nil then
+		gradeValue = gang.gradeLevel
 	end
 
-	if gradeValue == nil and job.grade_name ~= nil then
-		gradeValue = job.grade_name
+	if gradeValue == nil and gang.grade_name ~= nil then
+		gradeValue = gang.grade_name
 	end
 
-	return jobName, gradeValue
+	return gangName, gradeValue
 end
 
 local function IsGradePermitido(ranksPermitidos, gradeValue)
@@ -139,29 +255,124 @@ local function IsGradePermitido(ranksPermitidos, gradeValue)
 	return false
 end
 
-local function GetJobName(src)
+local function GetgangName(src)
 	local playerData = GetPlayerData(src)
-	if not playerData or not playerData.job then
+	if not playerData or not playerData.gang then
 		return nil
 	end
 
-	return playerData.job.name
+	return playerData.gang.name
 end
 
-local function IsPoliceJob(jobName)
-	if not jobName then
+local function IsPolicegang(gangName)
+	if not gangName then
 		return false
 	end
 
 	-- Ajuste aqui caso sua cidade use nomes diferentes para polícia
 	-- (ex.: sheriff, bope, prf, etc.).
-	local policeJobs = {
+	local policegangs = {
 		police = true,
+		law = true,
 		policia = true
 	}
 
-	return policeJobs[jobName] == true
+	return policegangs[gangName] == true
 end
+
+local function IsCargoGerenciaOuSuperior(gradeValue)
+	-- Nível mínimo configurável para liberar acesso administrativo ao tablet.
+	-- Altere em Config.NivelMinimoGerencia no config.lua.
+	local nivelMinimo = tonumber(Config.NivelMinimoGerencia) or 3
+	local nivelJogador = tonumber(gradeValue)
+
+	if not nivelJogador then
+		return false
+	end
+
+	return nivelJogador >= nivelMinimo
+end
+
+function PodeAcessarTabletFiscal(src, empresaId)
+	-- Regra administrativa do tablet:
+	-- A) dono_identifier == citizenid do jogador.
+	-- B) membro da organização + grade.level >= Config.NivelMinimoGerencia.
+	local empresaKey = tostring(empresaId or '')
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
+	if not empresaConfig then
+		return false, 'Empresa invalida.'
+	end
+
+	if IsJogadorDonoDaEmpresa(src, empresaKey) then
+		return true, 'dono'
+	end
+
+	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
+	local gangName, gradeValue = GetPlayergangData(src)
+
+	if not gangName or gangName ~= gangPermitido then
+		return false, 'Acesso negado: sua organizacao nao possui permissao para este tablet.'
+	end
+
+	if not IsCargoGerenciaOuSuperior(gradeValue) then
+		return false, 'Acesso negado: nivel hierarquico insuficiente para gerencia.'
+	end
+
+	return true, 'gerencia'
+end
+
+exports('tablet_fiscal', function(event, item, inventory, slot, data)
+	print('--- [DEBUG] Export do tablet_fiscal chamado com sucesso! ---')
+
+	local sourceId = GetSourceFromInventory(inventory)
+	if not sourceId then
+		print(('[%s][ERRO] Export tablet_fiscal sem source valido. event=%s slot=%s'):format(RESOURCE_NAME, tostring(event), tostring(slot)))
+		return
+	end
+
+	if event ~= 'usingItem' and event ~= 'usedItem' and event ~= 'useItem' then
+		print(('[%s][ERRO] Evento inesperado no export tablet_fiscal: %s'):format(RESOURCE_NAME, tostring(event)))
+		return
+	end
+
+	local citizenId = GetPlayerCitizenId(sourceId)
+	if not citizenId then
+		print(('[%s][ERRO] Falha ao obter citizenid no uso do tablet. source=%s'):format(RESOURCE_NAME, tostring(sourceId)))
+		Notify(sourceId, 'Falha ao validar identidade para abrir o tablet fiscal.', 'error')
+		return
+	end
+
+	local playerData = GetPlayerData(sourceId)
+	if not playerData or not playerData.gang then
+		print(('[%s][ERRO] PlayerData/gang indisponivel no uso do tablet. source=%s'):format(RESOURCE_NAME, tostring(sourceId)))
+		Notify(sourceId, 'Falha ao validar seu cargo para abrir o tablet fiscal.', 'error')
+		return
+	end
+
+	local gangName = playerData.gang.name
+	local empresaId = GetEmpresaIdPorDono(citizenId)
+	if not empresaId then
+		empresaId = GetEmpresaIdPorgang(gangName)
+	end
+
+	print(('--- [DEBUG] gang do jogador: %s | empresa resolvida: %s ---'):format(tostring(gangName), tostring(empresaId)))
+
+	if not empresaId then
+		print(('[%s][ERRO] Nenhuma empresa encontrada para abrir o tablet. source=%s gang=%s citizenid=%s'):format(RESOURCE_NAME, tostring(sourceId), tostring(gangName), tostring(citizenId)))
+		Notify(sourceId, 'Acesso negado: empresa nao encontrada para este tablet.', 'error')
+		return
+	end
+
+	local autorizado, motivo = PodeAcessarTabletFiscal(sourceId, empresaId)
+	if not autorizado then
+		print(('[%s][ERRO] Validacao do tablet falhou. source=%s empresa=%s motivo=%s'):format(RESOURCE_NAME, tostring(sourceId), tostring(empresaId), tostring(motivo)))
+		Notify(sourceId, 'Acesso negado ao tablet fiscal.', 'error')
+		return
+	end
+
+	print(('--- [DEBUG] Tablet autorizado via %s para empresa %s ---'):format(tostring(motivo), tostring(empresaId)))
+	TriggerClientEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', sourceId, empresaId)
+end)
 
 local function EstaPertoDoCofre(src, cofreCoords)
 	local ped = GetPlayerPed(src)
@@ -257,25 +468,22 @@ local function CreditarContaEmpresa(empresaId, valor)
 	return true
 end
 
-local function EnviarAlertaPolicia(empresaId, cofreCoords)
-	-- Dispara para todos os policiais online. Caso queira integrar com MDT,
-	-- este é o ponto ideal para também enviar blip/log externo.
+-- [CONFIGURAÇÃO DE DISPATCH] - Dono do servidor: Se você utiliza ps-dispatch, cd_dispatch ou outro sistema de chamados policiais, substitua o código dentro desta função pelo export do seu script.
+local function SendPoliceAlert(nomeEmpresa, coordenadas)
+	-- Implementação padrão sem dependência externa de dispatch.
+	-- Notifica apenas gangs de segurança pública com mensagem genérica.
 	for _, playerId in ipairs(GetPlayers()) do
 		local target = tonumber(playerId)
-		local jobName = GetJobName(target)
+		local gangName = GetgangName(target)
 
-		if IsPoliceJob(jobName) then
-			Notify(
-				target,
-				('Inconsistencia Fiscal detectada em %s. Verificar setor financeiro nas proximidades do cofre.'):format(empresaId),
-				'error'
-			)
+		if IsPolicegang(gangName) then
+			Notify(target, ('⚠️ Inconsistência Fiscal Detectada na empresa: %s'):format(nomeEmpresa), 'error')
 			TriggerClientEvent('wpp_lavagem_fiscal:client:AlertaFiscal', target, {
-				empresaId = empresaId,
+				empresaId = nomeEmpresa,
 				coords = {
-					x = cofreCoords.x,
-					y = cofreCoords.y,
-					z = cofreCoords.z
+					x = coordenadas.x,
+					y = coordenadas.y,
+					z = coordenadas.z
 				}
 			})
 		end
@@ -306,19 +514,17 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 		return
 	end
 
-	-- [Seguranca de Servidor - Job/Rank]
-	-- Toda autorizacao e feita com source real no servidor.
-	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
-	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
-	local jobName, gradeValue = GetPlayerJobData(src)
-
-	if jobName ~= jobPermitido then
-		Notify(src, 'Seu emprego nao tem permissao para usar este cofre.', 'error')
+	if not IsJogadorDonoDaEmpresa(src, empresaKey) then
+		Notify(src, 'Apenas o dono deste local pode operar o cofre fiscal.', 'error')
 		return
 	end
 
-	if not IsGradePermitido(ranksPermitidos, gradeValue) then
-		Notify(src, 'Seu cargo nao possui permissao para operar este cofre.', 'error')
+	-- Regra operacional do cofre físico:
+	-- qualquer membro da gangue dona da empresa pode depositar, sem trava por grade.
+	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
+	local gangName = GetPlayergangData(src)
+	if gangName ~= gangPermitido then
+		Notify(src, 'Seu emprego nao tem permissao para usar este cofre.', 'error')
 		return
 	end
 
@@ -369,6 +575,9 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 	-- valorEmpresa = 25% (empresa)
 	-- valorFuncionarios = 75% (distribuição aleatória no relatório)
 	local relatorioFuncionarios = GerarRelatorioFuncionarios(valorFuncionarios)
+	local citizenIdExecutor = GetPlayerCitizenId(src) or 'desconhecido'
+	local nomeExecutor = GetPlayerNomeExato(src)
+	local timestampOperacao = os.date('%Y-%m-%d %H:%M:%S')
 
 	local dadosAtuais = GetDadosEmpresa(empresaKey)
 	-- Persistência:
@@ -376,7 +585,12 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 	-- da operação (json) para auditoria/admin.
 	local novoSaldo = (tonumber(dadosAtuais.saldo) or 0) + valorEmpresa
 	local relatorioCompleto = {
-		data = os.date('%Y-%m-%d %H:%M:%S'),
+		citizenid = citizenIdExecutor,
+		nome_jogador = nomeExecutor,
+		valor_lavado = valor,
+		timestamp = timestampOperacao,
+		funcionarios_fantasmas = relatorioFuncionarios,
+		data = timestampOperacao,
 		empresa_id = empresaKey,
 		valor_depositado = valor,
 		valor_empresa = valorEmpresa,
@@ -392,7 +606,7 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarDinheiroSujo', function(emp
 
 	if math.random(100) <= CHANCE_ALERTA then
 		-- Gatilho probabilístico de inconsistência fiscal para polícia.
-		EnviarAlertaPolicia(empresaKey, empresaConfig.cofre)
+		SendPoliceAlert(empresaKey, empresaConfig.cofre)
 	end
 
 	Notify(

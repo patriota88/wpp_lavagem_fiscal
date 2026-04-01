@@ -54,13 +54,13 @@ local function Notify(src, message, nType)
 	end
 end
 
-local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+local function GetEmpresagangPermitido(empresaId, empresaConfig)
 	-- Prioriza tabela nova de organização permitida por empresa.
 	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
 		return Config.OrganizacoesPermitidas[empresaId]
 	end
 
-	return empresaConfig and empresaConfig.job or nil
+	return empresaConfig and empresaConfig.gang or nil
 end
 
 local function GetRanksPermitidos(empresaId, empresaConfig)
@@ -113,91 +113,91 @@ local function GetPlayerName(player)
 	return fullName
 end
 
-local function GetPlayerJobData(player)
-	-- Normaliza nome do job e grade para lidar com diferenças entre versões
+local function GetPlayergangData(player)
+	-- Normaliza nome do gang e grade para lidar com diferenças entre versões
 	-- de Qbox/QB-Core (grade em tabela, número ou string).
-	if not player or not player.PlayerData or not player.PlayerData.job then
+	if not player or not player.PlayerData or not player.PlayerData.gang then
 		return nil, nil
 	end
 
-	local job = player.PlayerData.job
-	local jobName = job.name
+	local gang = player.PlayerData.gang
+	local gangName = gang.name
 	local gradeValue = nil
 
-	if job.grade ~= nil then
-		if type(job.grade) == 'table' then
-			gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	if gang.grade ~= nil then
+		if type(gang.grade) == 'table' then
+			gradeValue = gang.grade.level or gang.grade.grade or gang.grade.name
 		else
-			gradeValue = job.grade
+			gradeValue = gang.grade
 		end
 	end
 
-	if gradeValue == nil and job.gradeLevel ~= nil then
-		gradeValue = job.gradeLevel
+	if gradeValue == nil and gang.gradeLevel ~= nil then
+		gradeValue = gang.gradeLevel
 	end
 
-	if gradeValue == nil and job.grade_name ~= nil then
-		gradeValue = job.grade_name
+	if gradeValue == nil and gang.grade_name ~= nil then
+		gradeValue = gang.grade_name
 	end
 
-	return jobName, gradeValue
+	return gangName, gradeValue
 end
 
-local function GetPlayerJobDataBySource(src)
+local function GetPlayergangDataBySource(src)
 	local playerData = GetPlayerData(src)
-	if not playerData or not playerData.job then
+	if not playerData or not playerData.gang then
 		return nil, nil
 	end
 
-	local job = playerData.job
-	local jobName = job.name
+	local gang = playerData.gang
+	local gangName = gang.name
 	local gradeValue = nil
 
-	if type(job.grade) == 'table' then
-		gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	if type(gang.grade) == 'table' then
+		gradeValue = gang.grade.level or gang.grade.grade or gang.grade.name
 	else
-		gradeValue = job.grade
+		gradeValue = gang.grade
 	end
 
-	if gradeValue == nil and job.gradeLevel ~= nil then
-		gradeValue = job.gradeLevel
+	if gradeValue == nil and gang.gradeLevel ~= nil then
+		gradeValue = gang.gradeLevel
 	end
 
-	if gradeValue == nil and job.grade_name ~= nil then
-		gradeValue = job.grade_name
+	if gradeValue == nil and gang.grade_name ~= nil then
+		gradeValue = gang.grade_name
 	end
 
-	return jobName, gradeValue
+	return gangName, gradeValue
 end
 
-local function IsPoliceJob(jobName)
-	if not jobName then
+local function IsPolicegang(gangName)
+	if not gangName then
 		return false
 	end
 
-	-- Adicione aqui outros jobs policiais da sua cidade, se necessário.
-	local policeJobs = {
+	-- Adicione aqui outros gangs policiais da sua cidade, se necessário.
+	local policegangs = {
 		police = true,
 		policia = true
 	}
 
-	return policeJobs[jobName] == true
+	return policegangs[gangName] == true
 end
 
 local function IsPoliceOnDuty(player)
-	if not player or not player.PlayerData or not player.PlayerData.job then
+	if not player or not player.PlayerData or not player.PlayerData.gang then
 		return false
 	end
 
-	local job = player.PlayerData.job
-	local jobName = job.name
-	if not IsPoliceJob(jobName) then
+	local gang = player.PlayerData.gang
+	local gangName = gang.name
+	if not IsPolicegang(gangName) then
 		return false
 	end
 
 	-- Regra principal: precisa estar em serviço.
 	-- Em servidores sem flag onduty, altere para true se quiser liberar para todo policial.
-	return job.onduty == true
+	return gang.onduty == true
 end
 
 local function IsGradePermitido(ranksPermitidos, gradeValue)
@@ -390,21 +390,21 @@ lib.callback.register('wpp_lavagem_fiscal:server:getEmpresaDados', function(sour
 		}
 	end
 
-	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
-	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
-
-	local jobName, gradeValue = GetPlayerJobDataBySource(src)
-	if jobName ~= jobPermitido then
+	if type(PodeAcessarTabletFiscal) ~= 'function' then
+		Notify(src, 'Acesso negado ao tablet fiscal. Validacao administrativa indisponivel.', 'error')
 		return {
 			ok = false,
-			message = 'Sem permissao para visualizar os dados desta empresa.'
+			message = 'Acesso negado ao tablet fiscal.'
 		}
 	end
 
-	if not IsGradePermitido(ranksPermitidos, gradeValue) then
+	local autorizado, motivo = PodeAcessarTabletFiscal(src, empresaKey)
+	if not autorizado then
+		Notify(src, 'Acesso negado ao tablet fiscal. Somente dono registrado ou gerencia autorizada.', 'error')
+		DebugLog(('Bloqueio de acesso ao tablet | Source: %s | Empresa: %s | Motivo: %s'):format(src, empresaKey, tostring(motivo or 'indefinido')))
 		return {
 			ok = false,
-			message = 'Acesso restrito aos cargos de diretoria.'
+			message = 'Acesso negado ao tablet fiscal.'
 		}
 	end
 
@@ -440,13 +440,18 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendos', function(empresaId
 		return
 	end
 
+	if type(IsJogadorDonoDaEmpresa) == 'function' and not IsJogadorDonoDaEmpresa(src, empresaKey) then
+		Notify(src, 'Apenas o dono deste local pode sacar dividendos neste cofre.', 'error')
+		return
+	end
+
 	-- [Seguranca de Servidor]
 	-- Esta trava valida o jogador real (source) no servidor, impedindo bypass por NUI.
-	local jobPermitido = GetEmpresaJobPermitido(empresaKey, empresaConfig)
+	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
 	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
 
-	local jobName, gradeValue = GetPlayerJobDataBySource(src)
-	if jobName ~= jobPermitido then
+	local gangName, gradeValue = GetPlayergangDataBySource(src)
+	if gangName ~= gangPermitido then
 		Notify(src, 'Seu emprego nao pertence a esta empresa.', 'error')
 		return
 	end

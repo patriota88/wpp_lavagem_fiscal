@@ -52,8 +52,9 @@ local function GarantirTabelaLavagemStatus()
 		[[
 			CREATE TABLE IF NOT EXISTS `wpp_lavagem_status` (
 				`empresa_id` VARCHAR(50) NOT NULL,
-				`saldo_lavado` INT NOT NULL DEFAULT 0,
+				`saldo_lavado` DECIMAL(15,2) NOT NULL DEFAULT 0,
 				`ultimo_relatorio` LONGTEXT NULL,
+				`dono_identifier` VARCHAR(80) NULL,
 				PRIMARY KEY (`empresa_id`)
 			) ENGINE=InnoDB
 			DEFAULT CHARSET=utf8mb4
@@ -66,7 +67,7 @@ end
 -- Atualiza o saldo de uma empresa no banco e sincroniza o cache em seguida.
 -- Opcionalmente também recebe ultimoRelatorio para persistir o JSON da operação.
 -- Usa INSERT ... ON DUPLICATE KEY UPDATE para criar/atualizar no mesmo comando.
-function SalvarSaldoEmpresa(empresaId, valor, ultimoRelatorio)
+function SalvarSaldoEmpresa(empresaId, valor, ultimoRelatorio, donoIdentifier)
 	if not empresaId then
 		return false
 	end
@@ -74,15 +75,20 @@ function SalvarSaldoEmpresa(empresaId, valor, ultimoRelatorio)
 	local saldo = tonumber(valor) or 0
 	local relatorioTabela = type(ultimoRelatorio) == 'table' and ultimoRelatorio or {}
 	local relatorioJson = json.encode(relatorioTabela)
+	local dono = nil
+	if type(donoIdentifier) == 'string' and donoIdentifier ~= '' then
+		dono = donoIdentifier
+	end
 	local affectedRows = MySQL.update.await(
 		[[
-			INSERT INTO wpp_lavagem_status (empresa_id, saldo_lavado, ultimo_relatorio)
-			VALUES (?, ?, ?)
+			INSERT INTO wpp_lavagem_status (empresa_id, saldo_lavado, ultimo_relatorio, dono_identifier)
+			VALUES (?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 				saldo_lavado = VALUES(saldo_lavado),
-				ultimo_relatorio = VALUES(ultimo_relatorio)
+				ultimo_relatorio = VALUES(ultimo_relatorio),
+				dono_identifier = COALESCE(VALUES(dono_identifier), dono_identifier)
 		]],
-		{ empresaId, saldo, relatorioJson }
+		{ empresaId, saldo, relatorioJson, dono }
 	)
 
 	if not affectedRows then

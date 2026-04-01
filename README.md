@@ -29,7 +29,7 @@ Fluxo principal:
 ## Funcionalidades Principais
 
 - Tablet Fiscal (NUI):
-  - Acesso por permissão de job + grade.
+  - Acesso por permissão de gang + grade.
   - Exibição do saldo atual da empresa.
   - Exibição do último relatório de distribuição.
   - Ação de saque de dividendos para diretoria autorizada.

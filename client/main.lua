@@ -51,13 +51,13 @@ if FRAMEWORK == 'qbcore' and GetResourceState('qb-core') == 'started' then
 	QBCore = exports['qb-core']:GetCoreObject()
 end
 
-local function GetEmpresaJobPermitido(empresaId, empresaConfig)
+local function GetEmpresagangPermitido(empresaId, empresaConfig)
 	-- Prioriza a tabela nova de compatibilidade e mantém fallback legado.
 	if Config and Config.OrganizacoesPermitidas and Config.OrganizacoesPermitidas[empresaId] then
 		return Config.OrganizacoesPermitidas[empresaId]
 	end
 
-	return empresaConfig and empresaConfig.job or nil
+	return empresaConfig and empresaConfig.gang or nil
 end
 
 local function GetRanksPermitidos(empresaId, empresaConfig)
@@ -93,7 +93,7 @@ local function GetPlayerData()
 	-- Fallback runtime para bases custom que sincronizam dados no state bag.
 	if LocalPlayer and LocalPlayer.state then
 		return {
-			job = LocalPlayer.state.job,
+			gang = LocalPlayer.state.gang,
 			items = LocalPlayer.state.items
 		}
 	end
@@ -139,33 +139,33 @@ local function Notify(message, nType)
 	end
 end
 
-local function GetPlayerJobData()
-	-- Dados do job sempre passam pela bridge única GetPlayerData().
+local function GetPlayergangData()
+	-- Dados do gang sempre passam pela bridge única GetPlayerData().
 	local playerData = GetPlayerData()
-	local job = playerData and playerData.job or nil
+	local gang = playerData and playerData.gang or nil
 
-	if not job then
+	if not gang then
 		return nil, nil
 	end
 
-	local jobName = job.name
+	local gangName = gang.name
 	local gradeValue = nil
 
-	if type(job.grade) == 'table' then
-		gradeValue = job.grade.level or job.grade.grade or job.grade.name
+	if type(gang.grade) == 'table' then
+		gradeValue = gang.grade.level or gang.grade.grade or gang.grade.name
 	else
-		gradeValue = job.grade
+		gradeValue = gang.grade
 	end
 
-	if gradeValue == nil and job.gradeLevel ~= nil then
-		gradeValue = job.gradeLevel
+	if gradeValue == nil and gang.gradeLevel ~= nil then
+		gradeValue = gang.gradeLevel
 	end
 
-	if gradeValue == nil and job.grade_name ~= nil then
-		gradeValue = job.grade_name
+	if gradeValue == nil and gang.grade_name ~= nil then
+		gradeValue = gang.grade_name
 	end
 
-	return jobName, gradeValue
+	return gangName, gradeValue
 end
 
 local function IsGradePermitido(ranksPermitidos, gradeValue)
@@ -183,23 +183,21 @@ local function IsGradePermitido(ranksPermitidos, gradeValue)
 	return false
 end
 
-local function PodeAbrirTablet(empresaId)
-	-- Gate único de permissão no client para visibilidade no target.
-	-- O servidor também valida novamente por segurança.
+local function IsMembroDaEmpresa(empresaId)
+	-- Regra operacional do cofre: qualquer membro da organização da empresa pode interagir.
+	-- A validação administrativa (dono/gerência) fica exclusivamente no servidor.
 	local empresaConfig = Config.Empresas and Config.Empresas[empresaId]
 	if not empresaConfig then
 		return false
 	end
 
-	local jobPermitido = GetEmpresaJobPermitido(empresaId, empresaConfig)
-	local ranksPermitidos = GetRanksPermitidos(empresaId, empresaConfig)
-
-	local jobName, gradeValue = GetPlayerJobData()
-	if not jobName or jobName ~= jobPermitido then
+	local gangPermitido = GetEmpresagangPermitido(empresaId, empresaConfig)
+	local gangName = GetPlayergangData()
+	if not gangName or gangName ~= gangPermitido then
 		return false
 	end
 
-	return IsGradePermitido(ranksPermitidos, gradeValue)
+	return true
 end
 
 local function TemItemTabletFiscal()
@@ -256,11 +254,6 @@ local function AbrirTabletFiscal(empresaId)
 		return
 	end
 
-	if not PodeAbrirTablet(empresaId) then
-		Notify('Acesso negado. Necessario job e rank da diretoria.', 'error')
-		return
-	end
-
 	-- VERIFICACAO DE INVENTARIO (ADS):
 	-- Mesmo com filtro no ox_target, fazemos a validação manual aqui para impedir
 	-- acesso indevido por evento/comando/bug de sincronização de UI.
@@ -312,6 +305,11 @@ local function AbrirTabletFiscal(empresaId)
 	SetNuiFocusKeepInput(false)
 end
 
+RegisterNetEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', function(empresaId)
+	print('--- [DEBUG] Recebido evento para abrir o Tablet ---')
+	AbrirTabletFiscal(empresaId)
+end)
+
 local function CriarInteracoesCofres()
 	-- Cria 1 zona por empresa definida em Config.Empresas.
 	if GetResourceState('ox_target') ~= 'started' then
@@ -320,6 +318,7 @@ local function CriarInteracoesCofres()
 	end
 
 	for empresaId, empresaConfig in pairs(Config.Empresas or {}) do
+		local gangPermitido = GetEmpresagangPermitido(empresaId, empresaConfig)
 		local zoneId = exports.ox_target:addSphereZone({
 			coords = empresaConfig.cofre,
 			radius = 1.8,
@@ -328,12 +327,12 @@ local function CriarInteracoesCofres()
 				{
 					-- O texto e ícone da interação podem ser customizados aqui.
 					name = ('wpp_lavagem_fiscal_%s'):format(empresaId),
-					label = 'Abrir Tablet Fiscal',
+					label = 'Depositar Dinheiro Sujo',
 					icon = 'fa-solid fa-tablet-screen-button',
 					items = (Config and Config.ItemTablet) or 'tablet_fiscal',
 					distance = 2.0,
 					canInteract = function()
-						return PodeAbrirTablet(empresaId)
+						return IsMembroDaEmpresa(empresaId)
 					end,
 					onSelect = function()
 						AbrirTabletFiscal(empresaId)
@@ -343,6 +342,13 @@ local function CriarInteracoesCofres()
 		})
 
 		targetZones[#targetZones + 1] = zoneId
+		print(('[DEBUG] ox_target criado para %s nas coordenadas %.2f, %.2f, %.2f com gang %s'):format(
+			tostring(empresaId),
+			tonumber(empresaConfig.cofre.x) or 0.0,
+			tonumber(empresaConfig.cofre.y) or 0.0,
+			tonumber(empresaConfig.cofre.z) or 0.0,
+			tostring(gangPermitido)
+		))
 	end
 end
 
