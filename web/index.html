@@ -13,14 +13,27 @@
 
 			<!-- INICIO: CABECALHO DO DASHBOARD -->
 			<header class="header">
-				<p class="kicker">WPP LAVAGEM FISCAL</p>
 				<h1 id="empresaNome">Empresa</h1>
 			</header>
 
-			<!-- INICIO: CARD DE SALDO DISPONIVEL -->
-			<section class="balance-card" aria-label="Saldo disponivel para saque">
-				<p class="label">Saldo Disponivel para Saque</p>
-				<p id="saldoValor" class="value">$0</p>
+			<!-- INICIO: CARD DE PAINEL FINANCEIRO -->
+			<section class="balance-card" aria-label="Painel financeiro da lavagem">
+				<div class="triple-panel">
+					<div class="panel-item">
+						<p class="label">Caixa da Empresa (25%)</p>
+						<p id="saldoEmpresa" class="value panel-value">R$ 0</p>
+					</div>
+					<div class="panel-item">
+						<p class="label">Dividendos do Cliente (75%)</p>
+						<p id="saldoCliente" class="value panel-value">R$ 0</p>
+					</div>
+					<div class="panel-item">
+						<p class="label">Total Historico Lavado</p>
+						<p id="totalLavado" class="value panel-value">R$ 0</p>
+					</div>
+				</div>
+				<p class="label timer-label">Tempo Restante de Lavagem</p>
+				<p id="tempoRestante" class="value timer-value">00:00</p>
 			</section>
 
 			<!-- INICIO: TABELA DE FUNCIONARIOS FANTASMAS -->
@@ -49,8 +62,11 @@
 
 			<!-- INICIO: ACOES DO DASHBOARD -->
 			<footer class="actions">
-				<button id="withdrawButton" class="withdraw-button" type="button">
-					Realizar Saque de Dividendos
+				<button id="withdrawCompanyButton" class="withdraw-button" type="button">
+					Sacar Caixa da Empresa
+				</button>
+				<button id="withdrawDividendButton" class="withdraw-button" type="button">
+					Sacar Dividendos
 				</button>
 			</footer>
 		</section>

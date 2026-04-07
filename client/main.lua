@@ -200,6 +200,57 @@ local function IsMembroDaEmpresa(empresaId)
 	return true
 end
 
+local function GetLimitesDeposito(empresaId)
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaId] or {}
+
+	local min = tonumber(empresaConfig.minDeposit)
+		or tonumber((Config and Config.minDeposit))
+		or tonumber(Config and Config.LimitesLavagem and Config.LimitesLavagem.minimo)
+		or 5000
+	local max = tonumber(empresaConfig.maxDeposit)
+		or tonumber((Config and Config.maxDeposit))
+		or tonumber(Config and Config.LimitesLavagem and Config.LimitesLavagem.maximo)
+		or 200000
+
+	min = math.floor(min)
+	max = math.floor(max)
+
+	if min < 1 then
+		min = 1
+	end
+
+	if max < min then
+		max = min
+	end
+
+	return min, max
+end
+
+local function AbrirDialogoDeposito(empresaId)
+	local min, max = GetLimitesDeposito(empresaId)
+	local input = lib.inputDialog('Depositar Dinheiro Sujo', {
+		{
+			type = 'number',
+			label = ('Quantidade (Min: R$ %d | Max: R$ %d)'):format(min, max),
+			required = true,
+			min = min,
+			max = max
+		}
+	})
+
+	if not input or not input[1] then
+		return
+	end
+
+	local valor = math.floor(tonumber(input[1]) or 0)
+	if valor < min or valor > max then
+		Notify(('Valor inválido. Permitido entre R$ %d e R$ %d.'):format(min, max), 'error')
+		return
+	end
+
+	TriggerServerEvent('wpp_lavagem_fiscal:server:DepositarCofre', empresaId, valor)
+end
+
 local function TemItemTabletFiscal()
 	local itemName = (Config and Config.ItemTablet) or 'tablet_fiscal'
 
@@ -248,66 +299,105 @@ local function FecharTabletFiscal()
 	StopTabletAnimation()
 end
 
-local function AbrirTabletFiscal(empresaId)
+local function AbrirTabletFiscal(_)
 	-- Evita múltiplas aberturas simultâneas da interface.
 	if nuiOpen then
 		return
 	end
 
-	-- VERIFICACAO DE INVENTARIO (ADS):
-	-- Mesmo com filtro no ox_target, fazemos a validação manual aqui para impedir
-	-- acesso indevido por evento/comando/bug de sincronização de UI.
-	if not TemItemTabletFiscal() then
-		Notify('Erro: Você precisa de um Tablet Fiscal para acessar este sistema.', 'error')
+	local PlayerData = nil
+	if QBCore and QBCore.Functions and QBCore.Functions.GetPlayerData then
+		PlayerData = QBCore.Functions.GetPlayerData()
+	else
+		PlayerData = GetPlayerData()
+	end
+
+	if not PlayerData or not PlayerData.gang or not PlayerData.gang.name then
+		Notify('Falha ao obter dados do jogador.', 'error')
 		return
 	end
 
+	local playerGang = PlayerData.gang.name
+	local playerGrade = nil
+	if type(PlayerData.gang.grade) == 'table' then
+		playerGrade = tonumber(PlayerData.gang.grade.level)
+	else
+		playerGrade = tonumber(PlayerData.gang.grade)
+	end
+
+	local empresaEncontrada = nil
+
+	for k, v in pairs(Config.Empresas or {}) do
+		if v.gang == playerGang then
+			empresaEncontrada = k
+			break
+		end
+	end
+
+	print('^3[DEBUG] Gangue: ' .. tostring(playerGang) .. ' | Nível: ' .. tostring(playerGrade) .. ' | Empresa: ' .. tostring(empresaEncontrada) .. '^7')
+
+	if empresaEncontrada == nil then
+		Notify('Empresa invalida', 'error')
+		return
+	end
+
+	if not playerGrade or playerGrade < (tonumber(Config.NivelMinimoGerencia) or 3) then
+		Notify('Cargo insuficiente', 'error')
+		return
+	end
+
+	print('^6--- [DEBUG] O Cliente recebeu a ordem para abrir a interface! ---^7')
 	StartTabletAnimation()
 
-	-- Simula autenticação antes de carregar os dados empresariais.
-	local loginOk = lib.progressBar({
-		duration = 2000,
-		label = 'Login no Sistema',
-		useWhileDead = false,
-		canCancel = true,
-		disable = {
-			move = true,
-			car = true,
-			combat = true,
-			mouse = true
-		}
+	SendNUIMessage({
+		action = 'openTabletFiscal',
+		open = true,
+		empresaId = empresaEncontrada,
+		saldo = 0,
+		tempoRestante = 0,
+		ultimoRelatorio = {}
 	})
 
-	if not loginOk then
-		Notify('Login cancelado.', 'error')
-		FecharTabletFiscal()
+	nuiOpen = true
+	SetNuiFocus(true, true)
+	print('^6--- [DEBUG] SetNuiFocus foi ativado para a interface do tablet. ---^7')
+	SetNuiFocusKeepInput(false)
+
+	-- Sincroniza dados reais (saldo + cronometro) no servidor ao abrir o tablet.
+	TriggerServerEvent('wpp_lavagem_fiscal:server:SolicitarStatusTablet', empresaEncontrada)
+end
+
+RegisterNetEvent('wpp_lavagem:abrirTablet', function(empresaId)
+	print('^6[DEBUG] Cliente recebeu comando para abrir!^7')
+	AbrirTabletFiscal(empresaId)
+end)
+
+RegisterNetEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', function(empresaId)
+	print('--- [DEBUG] Recebido evento para abrir o Tablet ---')
+	AbrirTabletFiscal(empresaId)
+end)
+
+RegisterNetEvent('wpp_lavagem_fiscal:client:StatusTabletFiscal', function(payload)
+	if not nuiOpen then
 		return
 	end
 
-	local response = lib.callback.await('wpp_lavagem_fiscal:server:getEmpresaDados', false, empresaId)
-	-- Dados críticos (saldo/último relatório) vêm do servidor já com validação.
-	if not response or not response.ok then
-		Notify((response and response.message) or 'Falha ao carregar dados da empresa.', 'error')
+	if not payload or payload.ok ~= true then
+		Notify((payload and payload.message) or 'Falha ao sincronizar dados do tablet.', 'error')
 		FecharTabletFiscal()
 		return
 	end
 
 	SendNUIMessage({
-		action = 'openTabletFiscal',
-		open = true,
-		empresaId = response.empresaId,
-		saldo = response.saldo,
-		ultimoRelatorio = response.ultimo_relatorio
+		action = 'updateTabletFiscal',
+		empresaId = payload.empresaId,
+		saldo = payload.saldo,
+		saldoEmpresa = payload.saldo_empresa,
+		saldoCliente = payload.saldo_cliente,
+		totalLavado = payload.total_lavado,
+		tempoRestante = payload.tempo_restante,
+		ultimoRelatorio = payload.ultimo_relatorio
 	})
-
-	nuiOpen = true
-	SetNuiFocus(true, true)
-	SetNuiFocusKeepInput(false)
-end
-
-RegisterNetEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', function(empresaId)
-	print('--- [DEBUG] Recebido evento para abrir o Tablet ---')
-	AbrirTabletFiscal(empresaId)
 end)
 
 local function CriarInteracoesCofres()
@@ -328,14 +418,13 @@ local function CriarInteracoesCofres()
 					-- O texto e ícone da interação podem ser customizados aqui.
 					name = ('wpp_lavagem_fiscal_%s'):format(empresaId),
 					label = 'Depositar Dinheiro Sujo',
-					icon = 'fa-solid fa-tablet-screen-button',
-					items = (Config and Config.ItemTablet) or 'tablet_fiscal',
+					icon = 'fa-solid fa-money-bill-transfer',
 					distance = 2.0,
 					canInteract = function()
 						return IsMembroDaEmpresa(empresaId)
 					end,
 					onSelect = function()
-						AbrirTabletFiscal(empresaId)
+						AbrirDialogoDeposito(empresaId)
 					end
 				}
 			}
@@ -390,6 +479,39 @@ RegisterNUICallback('closeTablet', function(_, cb)
 	cb({ ok = true })
 end)
 
+local function AtualizarNuiEmpresa(empresaId)
+	local response = lib.callback.await('wpp_lavagem_fiscal:server:getEmpresaDados', false, empresaId)
+	if response and response.ok then
+		SendNUIMessage({
+			action = 'updateTabletFiscal',
+			empresaId = response.empresaId,
+			saldo = response.saldo,
+			saldoEmpresa = response.saldo_empresa,
+			saldoCliente = response.saldo_cliente,
+			totalLavado = response.total_lavado,
+			tempoRestante = response.tempo_restante,
+			ultimoRelatorio = response.ultimo_relatorio
+		})
+	end
+end
+
+RegisterNUICallback('requestCompanyWithdraw', function(data, cb)
+	local empresaId = data and data.empresaId and tostring(data.empresaId) or nil
+	if not empresaId then
+		cb({ ok = false, message = 'Empresa invalida.' })
+		return
+	end
+
+	TriggerServerEvent('wpp_lavagem_fiscal:server:SacarCaixaEmpresa', empresaId)
+
+	CreateThread(function()
+		Wait(650)
+		AtualizarNuiEmpresa(empresaId)
+	end)
+
+	cb({ ok = true })
+end)
+
 RegisterNUICallback('requestDividendWithdraw', function(data, cb)
 	local empresaId = data and data.empresaId and tostring(data.empresaId) or nil
 	if not empresaId then
@@ -397,20 +519,11 @@ RegisterNUICallback('requestDividendWithdraw', function(data, cb)
 		return
 	end
 
-	TriggerServerEvent('wpp_lavagem_fiscal:server:SacarDividendos', empresaId)
+	TriggerServerEvent('wpp_lavagem_fiscal:server:SacarDividendosCliente', empresaId)
 
-	-- Pequeno delay para permitir que o servidor finalize o saque e persistencia.
 	CreateThread(function()
 		Wait(650)
-		local response = lib.callback.await('wpp_lavagem_fiscal:server:getEmpresaDados', false, empresaId)
-		if response and response.ok then
-			SendNUIMessage({
-				action = 'updateTabletFiscal',
-				empresaId = response.empresaId,
-				saldo = response.saldo,
-				ultimoRelatorio = response.ultimo_relatorio
-			})
-		end
+		AtualizarNuiEmpresa(empresaId)
 	end)
 
 	cb({ ok = true })
@@ -430,3 +543,8 @@ AddEventHandler('onResourceStop', function(resourceName)
 	FecharTabletFiscal()
 	RemoverInteracoesCofres()
 end)
+
+RegisterCommand('abrirnaforca', function()
+	print('^6[DEBUG] Forçando abertura da NUI pelo comando...^7')
+	TriggerEvent('wpp_lavagem:abrirTablet')
+end, false)

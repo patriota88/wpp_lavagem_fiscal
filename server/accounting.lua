@@ -361,6 +361,72 @@ end
 exports('TransferirTaxaEmpresa', TransferirTaxaEmpresa)
 exports('GerarRelatorioSemanalFiscal', GerarRelatorioSemanalFiscal)
 
+local function ParseTimestampRelatorio(timestampText)
+	if type(timestampText) ~= 'string' or timestampText == '' then
+		return nil
+	end
+
+	local ano, mes, dia, hora, minuto, segundo = timestampText:match('^(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)$')
+	if not ano then
+		return nil
+	end
+
+	local year = tonumber(ano)
+	local month = tonumber(mes)
+	local day = tonumber(dia)
+	local hour = tonumber(hora)
+	local min = tonumber(minuto)
+	local sec = tonumber(segundo)
+	if not year or not month or not day or not hour or not min or not sec then
+		return nil
+	end
+
+	return os.time({
+		year = year,
+		month = month,
+		day = day,
+		hour = hour,
+		min = min,
+		sec = sec
+	})
+end
+
+local function CalcularTempoRestanteLavagem(ultimoRelatorio)
+	local duracaoTotal = tonumber(Config and Config.TempoLavagemSegundos) or 1800
+	if duracaoTotal < 1 then
+		duracaoTotal = 1
+	end
+
+	if type(ultimoRelatorio) ~= 'table' then
+		return 0
+	end
+
+	local agora = os.time()
+
+	local fimEpoch = tonumber(ultimoRelatorio.tempo_fim_epoch or ultimoRelatorio.end_timestamp_epoch)
+	if not fimEpoch then
+		local fimTexto = ultimoRelatorio.tempo_fim or ultimoRelatorio.timestamp_fim
+		fimEpoch = ParseTimestampRelatorio(fimTexto)
+	end
+
+	if not fimEpoch then
+		local timestampInicio = ultimoRelatorio.timestamp or ultimoRelatorio.data
+		local inicioEpoch = ParseTimestampRelatorio(timestampInicio)
+		if not inicioEpoch then
+			return 0
+		end
+
+		fimEpoch = inicioEpoch + duracaoTotal
+	end
+
+	local restante = fimEpoch - agora
+	if restante < 0 then
+		restante = 0
+	end
+
+	return restante
+end
+
 lib.callback.register('wpp_lavagem_fiscal:server:getEmpresaDados', function(source, empresaId)
 	-- Callback usado pelo tablet no client para carregar saldo/relatório.
 	-- Importante: possui validação de permissão no servidor (não confiar no client).
@@ -409,12 +475,31 @@ lib.callback.register('wpp_lavagem_fiscal:server:getEmpresaDados', function(sour
 	end
 
 	local dados = GetDadosEmpresa(empresaKey)
+	local status = nil
+	if type(MontarStatusTabletEmpresa) == 'function' then
+		status = MontarStatusTabletEmpresa(empresaKey, dados)
+	else
+		local ultimoRelatorio = type(dados.ultimo_relatorio) == 'table' and dados.ultimo_relatorio or {}
+		local tempoRestante = CalcularTempoRestanteLavagem(ultimoRelatorio)
+		status = {
+			saldo = tonumber(dados.saldo) or 0,
+			saldo_empresa = tonumber(dados.saldo_empresa) or 0,
+			saldo_cliente = tonumber(dados.saldo_cliente) or 0,
+			total_lavado = tonumber(dados.total_lavado) or 0,
+			tempo_restante = tempoRestante,
+			ultimo_relatorio = ultimoRelatorio
+		}
+	end
 	-- Retorno já sanitizado para evitar nils na NUI.
 	return {
 		ok = true,
 		empresaId = empresaKey,
-		saldo = tonumber(dados.saldo) or 0,
-		ultimo_relatorio = type(dados.ultimo_relatorio) == 'table' and dados.ultimo_relatorio or {}
+		saldo = tonumber(status.saldo) or 0,
+		saldo_empresa = tonumber(status.saldo_empresa) or 0,
+		saldo_cliente = tonumber(status.saldo_cliente) or 0,
+		total_lavado = tonumber(status.total_lavado) or 0,
+		tempo_restante = tonumber(status.tempo_restante) or 0,
+		ultimo_relatorio = type(status.ultimo_relatorio) == 'table' and status.ultimo_relatorio or {}
 	}
 end)
 
@@ -448,16 +533,27 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendos', function(empresaId
 	-- [Seguranca de Servidor]
 	-- Esta trava valida o jogador real (source) no servidor, impedindo bypass por NUI.
 	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
-	local ranksPermitidos = GetRanksPermitidos(empresaKey, empresaConfig)
+	local Player = GetPlayerObject(src)
+	if not Player or not Player.PlayerData or not Player.PlayerData.gang then
+		Notify(src, 'Jogador nao encontrado no servidor.', 'error')
+		return
+	end
 
-	local gangName, gradeValue = GetPlayergangDataBySource(src)
+	local gangName = Player.PlayerData.gang.name
+	local playerGrade = nil
+	if type(Player.PlayerData.gang.grade) == 'table' then
+		playerGrade = tonumber(Player.PlayerData.gang.grade.level)
+	else
+		playerGrade = tonumber(Player.PlayerData.gang.grade)
+	end
+
 	if gangName ~= gangPermitido then
 		Notify(src, 'Seu emprego nao pertence a esta empresa.', 'error')
 		return
 	end
 
-	if not IsGradePermitido(ranksPermitidos, gradeValue) then
-		Notify(src, 'Somente diretoria (cargos 01 e 02) pode sacar dividendos.', 'error')
+	if not playerGrade or playerGrade < (tonumber(Config.NivelMinimoGerencia) or 3) then
+		Notify(src, 'Cargo insuficiente na facção para realizar saques.', 'error')
 		return
 	end
 
@@ -469,42 +565,35 @@ RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendos', function(empresaId
 		return
 	end
 
-	if GetResourceState('ps-banking') ~= 'started' then
-		Notify(src, 'ps-banking nao esta iniciado.', 'error')
+	if GetResourceState('ox_inventory') ~= 'started' then
+		Notify(src, 'ox_inventory nao esta iniciado.', 'error')
 		return
 	end
 
-	local okRemove, removeResult = pcall(function()
-		return exports['ps-banking']:RemoveMoney(empresaKey, saldo, 'saque-dividendos')
-	end)
-
-	if not okRemove or removeResult ~= true then
-		Notify(src, 'Falha ao debitar saldo da organizacao no ps-banking.', 'error')
-		return
-	end
-
-	if not DepositarBancoPessoal(player, saldo) then
-		-- Reverte a retirada da conta da empresa se falhar depósito pessoal.
-		-- Evita perda de saldo por falha parcial no meio da transação.
-		exports['ps-banking']:AddMoney(empresaKey, saldo, 'rollback-saque-dividendos')
-		Notify(src, 'Falha ao depositar dividendos na sua conta bancaria.', 'error')
+	local dinheiroLimpoItem = (Config and Config.CleanMoneyItem) or 'money'
+	if not exports.ox_inventory:AddItem(src, dinheiroLimpoItem, saldo) then
+		Notify(src, 'Falha ao adicionar o dinheiro ao inventario.', 'error')
 		return
 	end
 
 	local manteveRelatorio = type(dados.ultimo_relatorio) == 'table' and dados.ultimo_relatorio or {}
-	local salvou = SalvarSaldoEmpresa(empresaKey, 0, manteveRelatorio)
+	manteveRelatorio.funcionarios = {}
+	manteveRelatorio.tempo_fim_epoch = 0
+	local salvou = SalvarSaldoEmpresa(empresaKey, 0, manteveRelatorio, nil, 0)
 	if not salvou then
+		if GetResourceState('ox_inventory') == 'started' then
+			exports.ox_inventory:RemoveItem(src, dinheiroLimpoItem, saldo)
+		end
 		Notify(src, 'Saque realizado, mas houve falha ao atualizar saldo no banco de dados.', 'error')
 		return
 	end
 
-	local diretor = GetPlayerName(player)
+	local diretor = GetPlayerName(Player)
 	if IsDebugEnabled() then
-		-- Log de auditoria administrativa de saque (somente com Config.Debug = true).
 		DebugLog(('Saque de dividendos | Diretor: %s | Empresa: %s | Valor: $%d'):format(diretor, empresaKey, saldo))
 	end
 
-	Notify(src, ('Saque de dividendos realizado: $%d depositado em sua conta bancaria.'):format(saldo), 'success')
+	Notify(src, ('Saque de dividendos realizado: $%d retirado do cofre e adicionado ao seu inventario.'):format(saldo), 'success')
 end)
 
 RegisterCommand('relatoriofiscal', function(source)

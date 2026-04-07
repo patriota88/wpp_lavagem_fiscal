@@ -1,6 +1,7 @@
 ---@diagnostic disable: undefined-global
 
 local RESOURCE_NAME = GetCurrentResourceName()
+print('^2--- [DEBUG] Script wpp_lavagem_fiscal iniciado com sucesso! ---^7')
 -- Taxa da empresa: prefira alterar em Config.TaxaEmpresa (config.lua).
 -- Este fallback (0.25) só é usado se a config estiver ausente/inválida.
 local TAXA_EMPRESA = tonumber(Config.TaxaEmpresa) or 0.25
@@ -41,7 +42,35 @@ local function DetectFramework()
 end
 
 local FRAMEWORK = DetectFramework()
-local QBCore = FRAMEWORK == 'qbcore' and GetResourceState('qb-core') == 'started' and exports['qb-core']:GetCoreObject() or nil
+local QBCore = nil
+
+local function GetCoreObject()
+	if GetResourceState('qb-core') == 'started' then
+		local ok, core = pcall(function()
+			return exports['qb-core']:GetCoreObject()
+		end)
+		if ok and core then
+			return core
+		end
+	end
+
+	if GetResourceState('qbx_core') == 'started' then
+		local ok, core = pcall(function()
+			return exports.qbx_core:GetCoreObject()
+		end)
+		if ok and core then
+			return core
+		end
+	end
+
+	return nil
+end
+
+QBCore = GetCoreObject()
+
+MySQL.Async.execute('ALTER TABLE wpp_lavagem_status ADD COLUMN IF NOT EXISTS total_lavado INT DEFAULT 0', {}, function() end)
+MySQL.Async.execute('ALTER TABLE wpp_lavagem_status ADD COLUMN IF NOT EXISTS saldo_empresa INT DEFAULT 0', {}, function() end)
+MySQL.Async.execute('ALTER TABLE wpp_lavagem_status ADD COLUMN IF NOT EXISTS saldo_cliente INT DEFAULT 0', {}, function() end)
 
 local function Notify(src, message, nType)
 	TriggerClientEvent('ox_lib:notify', src, {
@@ -302,11 +331,9 @@ function PodeAcessarTabletFiscal(src, empresaId)
 	if not empresaConfig then
 		return false, 'Empresa invalida.'
 	end
-
 	if IsJogadorDonoDaEmpresa(src, empresaKey) then
 		return true, 'dono'
 	end
-
 	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
 	local gangName, gradeValue = GetPlayergangData(src)
 
@@ -317,62 +344,31 @@ function PodeAcessarTabletFiscal(src, empresaId)
 	if not IsCargoGerenciaOuSuperior(gradeValue) then
 		return false, 'Acesso negado: nivel hierarquico insuficiente para gerencia.'
 	end
-
 	return true, 'gerencia'
 end
 
-exports('tablet_fiscal', function(event, item, inventory, slot, data)
-	print('--- [DEBUG] Export do tablet_fiscal chamado com sucesso! ---')
+local function AbrirTabletParaSource(sourceId)
+	TriggerClientEvent('wpp_lavagem:abrirTablet', sourceId)
+	TriggerClientEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', sourceId)
+end
 
-	local sourceId = GetSourceFromInventory(inventory)
-	if not sourceId then
-		print(('[%s][ERRO] Export tablet_fiscal sem source valido. event=%s slot=%s'):format(RESOURCE_NAME, tostring(event), tostring(slot)))
-		return
+local function RegistrarTabletFiscalUsavel()
+	local core = QBCore or GetCoreObject()
+	QBCore = core
+
+	if not core or not core.Functions or not core.Functions.CreateUseableItem then
+		print('^1[DEBUG] Nao foi possivel registrar tablet_fiscal via core nativo neste momento.^7')
+		return false
 	end
 
-	if event ~= 'usingItem' and event ~= 'usedItem' and event ~= 'useItem' then
-		print(('[%s][ERRO] Evento inesperado no export tablet_fiscal: %s'):format(RESOURCE_NAME, tostring(event)))
-		return
-	end
+	core.Functions.CreateUseableItem('tablet_fiscal', function(source)
+		-- Registro simples e direto para compatibilidade com Qbox/ox_inventory.
+		TriggerClientEvent('wpp_lavagem:abrirTablet', source)
+	end)
 
-	local citizenId = GetPlayerCitizenId(sourceId)
-	if not citizenId then
-		print(('[%s][ERRO] Falha ao obter citizenid no uso do tablet. source=%s'):format(RESOURCE_NAME, tostring(sourceId)))
-		Notify(sourceId, 'Falha ao validar identidade para abrir o tablet fiscal.', 'error')
-		return
-	end
-
-	local playerData = GetPlayerData(sourceId)
-	if not playerData or not playerData.gang then
-		print(('[%s][ERRO] PlayerData/gang indisponivel no uso do tablet. source=%s'):format(RESOURCE_NAME, tostring(sourceId)))
-		Notify(sourceId, 'Falha ao validar seu cargo para abrir o tablet fiscal.', 'error')
-		return
-	end
-
-	local gangName = playerData.gang.name
-	local empresaId = GetEmpresaIdPorDono(citizenId)
-	if not empresaId then
-		empresaId = GetEmpresaIdPorgang(gangName)
-	end
-
-	print(('--- [DEBUG] gang do jogador: %s | empresa resolvida: %s ---'):format(tostring(gangName), tostring(empresaId)))
-
-	if not empresaId then
-		print(('[%s][ERRO] Nenhuma empresa encontrada para abrir o tablet. source=%s gang=%s citizenid=%s'):format(RESOURCE_NAME, tostring(sourceId), tostring(gangName), tostring(citizenId)))
-		Notify(sourceId, 'Acesso negado: empresa nao encontrada para este tablet.', 'error')
-		return
-	end
-
-	local autorizado, motivo = PodeAcessarTabletFiscal(sourceId, empresaId)
-	if not autorizado then
-		print(('[%s][ERRO] Validacao do tablet falhou. source=%s empresa=%s motivo=%s'):format(RESOURCE_NAME, tostring(sourceId), tostring(empresaId), tostring(motivo)))
-		Notify(sourceId, 'Acesso negado ao tablet fiscal.', 'error')
-		return
-	end
-
-	print(('--- [DEBUG] Tablet autorizado via %s para empresa %s ---'):format(tostring(motivo), tostring(empresaId)))
-	TriggerClientEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', sourceId, empresaId)
-end)
+	print(('[%s][DEBUG] Registro nativo do item tablet_fiscal finalizado com sucesso.'):format(RESOURCE_NAME))
+	return true
+end
 
 local function EstaPertoDoCofre(src, cofreCoords)
 	local ped = GetPlayerPed(src)
@@ -401,6 +397,436 @@ local function RemoverDinheiroSujo(src, valor)
 
 	return false, 'Voce nao possui dinheiro sujo suficiente.'
 end
+
+local function GetLimitesDeposito(empresaId)
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaId] or {}
+
+	local min = tonumber(empresaConfig.minDeposit)
+		or tonumber((Config and Config.minDeposit))
+		or tonumber(Config and Config.LimitesLavagem and Config.LimitesLavagem.minimo)
+		or 5000
+	local max = tonumber(empresaConfig.maxDeposit)
+		or tonumber((Config and Config.maxDeposit))
+		or tonumber(Config and Config.LimitesLavagem and Config.LimitesLavagem.maximo)
+		or 200000
+
+	min = math.floor(min)
+	max = math.floor(max)
+
+	if min < 1 then
+		min = 1
+	end
+
+	if max < min then
+		max = min
+	end
+
+	return min, max
+end
+
+local function ParseTimestampRelatorio(timestampText)
+	if type(timestampText) ~= 'string' or timestampText == '' then
+		return nil
+	end
+
+	local ano, mes, dia, hora, minuto, segundo = timestampText:match('^(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)$')
+	if not ano then
+		return nil
+	end
+
+	local year = tonumber(ano)
+	local month = tonumber(mes)
+	local day = tonumber(dia)
+	local hour = tonumber(hora)
+	local min = tonumber(minuto)
+	local sec = tonumber(segundo)
+	if not year or not month or not day or not hour or not min or not sec then
+		return nil
+	end
+
+	return os.time({
+		year = year,
+		month = month,
+		day = day,
+		hour = hour,
+		min = min,
+		sec = sec
+	})
+end
+
+local function CalcularTempoRestanteLavagem(tempoFim)
+	local restante = (tonumber(tempoFim) or 0) - os.time()
+	if restante < 0 then
+		restante = 0
+	end
+	return restante
+end
+
+local function GerarFuncionariosFantasmasParaSaldo(saldoTotal)
+	local nomes = Config.FuncionariosFantasmas or {}
+	if #nomes == 0 or saldoTotal <= 0 then
+		return {}
+	end
+
+	local copia = {}
+	for i = 1, #nomes do
+		copia[i] = nomes[i]
+	end
+
+	for i = #copia, 2, -1 do
+		local j = math.random(i)
+		copia[i], copia[j] = copia[j], copia[i]
+	end
+
+	local quantidade = math.min(#copia, 6)
+	if quantidade < 1 then
+		quantidade = 1
+	end
+
+	local base = math.floor(saldoTotal / quantidade)
+	local restante = saldoTotal - (base * quantidade)
+	local lista = {}
+
+	for i = 1, quantidade do
+		local valor = base
+		if restante > 0 then
+			valor = valor + 1
+			restante = restante - 1
+		end
+
+		lista[#lista + 1] = {
+			nome = tostring(copia[i] or ('Funcionario ' .. tostring(i))),
+			valor = valor
+		}
+	end
+
+	return lista
+end
+
+function MontarStatusTabletEmpresa(empresaKey, dados)
+	local saldoEmpresa = math.floor(tonumber(dados and dados.saldo_empresa) or 0)
+	local saldoCliente = math.floor(tonumber(dados and dados.saldo_cliente) or 0)
+	local saldo = saldoEmpresa + saldoCliente
+	local tempoFim = tonumber(dados and dados.tempo_fim) or 0
+	local totalLavado = math.floor(tonumber(dados and dados.total_lavado) or 0)
+	local tempoRestante = CalcularTempoRestanteLavagem(tempoFim)
+	local ultimoRelatorio = type(dados and dados.ultimo_relatorio) == 'table' and dados.ultimo_relatorio or {}
+
+	if tempoRestante > 0 then
+		local relatorioAtivo = {}
+		for chave, valor in pairs(ultimoRelatorio) do
+			relatorioAtivo[chave] = valor
+		end
+		relatorioAtivo.funcionarios = {}
+
+		return {
+			saldo = saldo,
+			saldo_empresa = saldoEmpresa,
+			saldo_cliente = saldoCliente,
+			total_lavado = totalLavado,
+			tempo_restante = tempoRestante,
+			ultimo_relatorio = relatorioAtivo
+		}
+	end
+
+	if saldo > 0 then
+		local funcionariosProntos = type(ultimoRelatorio.funcionarios) == 'table' and #ultimoRelatorio.funcionarios > 0
+		local saldoBase = tonumber(ultimoRelatorio.saldo_base_fantasmas) or -1
+		if not funcionariosProntos or saldoBase ~= saldo then
+			ultimoRelatorio.funcionarios = GerarFuncionariosFantasmasParaSaldo(saldo)
+			ultimoRelatorio.saldo_base_fantasmas = saldo
+			ultimoRelatorio.tempo_fim_epoch = tempoFim
+			SalvarSaldoEmpresa(empresaKey, saldo, ultimoRelatorio, nil, tempoFim, totalLavado, saldoEmpresa, saldoCliente)
+		end
+	else
+		ultimoRelatorio.funcionarios = {}
+	end
+
+	return {
+		saldo = saldo,
+		saldo_empresa = saldoEmpresa,
+		saldo_cliente = saldoCliente,
+		total_lavado = totalLavado,
+		tempo_restante = 0,
+		ultimo_relatorio = ultimoRelatorio
+	}
+end
+
+RegisterNetEvent('wpp_lavagem_fiscal:server:SolicitarStatusTablet', function(empresaId)
+	local src = source
+	local empresaKey = tostring(empresaId or '')
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
+
+	if FRAMEWORK == 'none' then
+		TriggerClientEvent('wpp_lavagem_fiscal:client:StatusTabletFiscal', src, {
+			ok = false,
+			message = 'Framework incompativel. Necessario Qbox/MRI-Qbox ou QB-Core.'
+		})
+		return
+	end
+
+	if not empresaConfig then
+		TriggerClientEvent('wpp_lavagem_fiscal:client:StatusTabletFiscal', src, {
+			ok = false,
+			message = 'Empresa invalida.'
+		})
+		return
+	end
+
+	local autorizado, motivo = PodeAcessarTabletFiscal(src, empresaKey)
+	if not autorizado then
+		TriggerClientEvent('wpp_lavagem_fiscal:client:StatusTabletFiscal', src, {
+			ok = false,
+			message = 'Acesso negado ao tablet fiscal.'
+		})
+		print(('[%s][AVISO] Bloqueio ao sincronizar status do tablet | src=%s empresa=%s motivo=%s'):format(
+			RESOURCE_NAME,
+			tostring(src),
+			tostring(empresaKey),
+			tostring(motivo)
+		))
+		return
+	end
+
+	local status = MontarStatusTabletEmpresa(empresaKey, GetDadosEmpresa(empresaKey))
+	TriggerClientEvent('wpp_lavagem_fiscal:client:StatusTabletFiscal', src, {
+		ok = true,
+		empresaId = empresaKey,
+		saldo = status.saldo,
+		saldo_empresa = status.saldo_empresa,
+		saldo_cliente = status.saldo_cliente,
+		total_lavado = status.total_lavado,
+		tempo_restante = status.tempo_restante,
+		ultimo_relatorio = status.ultimo_relatorio
+	})
+end)
+
+local function SacarParteCofre(src, empresaKey, tipoSaque, descricao)
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
+	if not empresaConfig then
+		Notify(src, 'Empresa invalida para saque.', 'error')
+		return
+	end
+
+	if GetResourceState('ox_inventory') ~= 'started' then
+		Notify(src, 'ox_inventory nao esta iniciado.', 'error')
+		return
+	end
+
+	local player = GetPlayerObject(src)
+	if not player or not player.PlayerData or not player.PlayerData.gang then
+		Notify(src, 'Jogador nao encontrado no servidor.', 'error')
+		return
+	end
+
+	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
+	local gangName = player.PlayerData.gang.name
+	if gangName ~= gangPermitido then
+		Notify(src, 'Seu emprego nao pertence a esta empresa.', 'error')
+		return
+	end
+
+	local playerGrade = nil
+	if type(player.PlayerData.gang.grade) == 'table' then
+		playerGrade = tonumber(player.PlayerData.gang.grade.level)
+	else
+		playerGrade = tonumber(player.PlayerData.gang.grade)
+	end
+
+	if not playerGrade or playerGrade < (tonumber(Config.NivelMinimoGerencia) or 3) then
+		Notify(src, 'Cargo insuficiente na facção para realizar saques.', 'error')
+		return
+	end
+
+	local dados = GetDadosEmpresa(empresaKey)
+	local saldoEmpresaAtual = math.floor(tonumber(dados.saldo_empresa) or 0)
+	local saldoClienteAtual = math.floor(tonumber(dados.saldo_cliente) or 0)
+	local saldoAtual = saldoEmpresaAtual + saldoClienteAtual
+	local totalLavadoAtual = math.floor(tonumber(dados.total_lavado) or 0)
+	if saldoAtual <= 0 then
+		Notify(src, 'Nao ha saldo disponivel para saque.', 'error')
+		return
+	end
+
+	local valorSaque = 0
+	if tipoSaque == 'empresa' then
+		valorSaque = saldoEmpresaAtual
+	elseif tipoSaque == 'cliente' then
+		valorSaque = saldoClienteAtual
+	end
+
+	if valorSaque <= 0 then
+		Notify(src, 'Nao ha saldo suficiente nesta conta para saque.', 'error')
+		return
+	end
+
+	local dinheiroLimpoItem = (Config and Config.CleanMoneyItem) or 'money'
+	if not exports.ox_inventory:AddItem(src, dinheiroLimpoItem, valorSaque) then
+		Notify(src, 'Falha ao adicionar dinheiro limpo ao inventario.', 'error')
+		return
+	end
+
+	local novoSaldoEmpresa = saldoEmpresaAtual
+	local novoSaldoCliente = saldoClienteAtual
+	if tipoSaque == 'empresa' then
+		novoSaldoEmpresa = 0
+	elseif tipoSaque == 'cliente' then
+		novoSaldoCliente = 0
+	end
+
+	local novoSaldo = novoSaldoEmpresa + novoSaldoCliente
+	local novoTotalLavado = totalLavadoAtual + valorSaque
+
+	local relatorioAtual = type(dados.ultimo_relatorio) == 'table' and dados.ultimo_relatorio or {}
+	if novoSaldo <= 0 then
+		relatorioAtual.funcionarios = {}
+		relatorioAtual.tempo_fim_epoch = 0
+	end
+
+	local salvou = SalvarSaldoEmpresa(
+		empresaKey,
+		novoSaldo,
+		relatorioAtual,
+		nil,
+		dados.tempo_fim,
+		novoTotalLavado,
+		novoSaldoEmpresa,
+		novoSaldoCliente
+	)
+	if not salvou then
+		exports.ox_inventory:RemoveItem(src, dinheiroLimpoItem, valorSaque)
+		Notify(src, 'Falha ao atualizar saldo da empresa no banco.', 'error')
+		return
+	end
+
+	Notify(src, ('%s realizado com sucesso: R$ %d.'):format(descricao, valorSaque), 'success')
+end
+
+RegisterNetEvent('wpp_lavagem_fiscal:server:SacarCaixaEmpresa', function(empresaId)
+	SacarParteCofre(source, tostring(empresaId or ''), 'empresa', 'Saque do Caixa da Empresa')
+end)
+
+RegisterNetEvent('wpp_lavagem_fiscal:server:SacarDividendosCliente', function(empresaId)
+	SacarParteCofre(source, tostring(empresaId or ''), 'cliente', 'Saque de Dividendos')
+end)
+
+RegisterNetEvent('wpp_lavagem_fiscal:server:DepositarCofre', function(empresaId, valorInformado)
+	local src = source
+	local empresaKey = tostring(empresaId or '')
+	local empresaConfig = Config.Empresas and Config.Empresas[empresaKey]
+
+	if not empresaConfig then
+		Notify(src, 'Empresa invalida para deposito.', 'error')
+		return
+	end
+
+	if GetResourceState('ox_inventory') ~= 'started' then
+		Notify(src, 'ox_inventory nao esta iniciado.', 'error')
+		return
+	end
+
+	if not EstaPertoDoCofre(src, empresaConfig.cofre) then
+		Notify(src, 'Voce precisa estar no cofre da empresa para depositar.', 'error')
+		return
+	end
+
+	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
+	local gangName = GetPlayergangData(src)
+	if gangName ~= gangPermitido then
+		Notify(src, 'Seu emprego nao tem permissao para usar este cofre.', 'error')
+		return
+	end
+
+	local valor = math.floor(tonumber(valorInformado) or 0)
+	local minimo, maximo = GetLimitesDeposito(empresaKey)
+	if valor < minimo or valor > maximo then
+		print(('[%s][AVISO] Deposito bloqueado por limite invalido | src=%s empresa=%s valor=%s min=%s max=%s'):format(
+			RESOURCE_NAME,
+			tostring(src),
+			tostring(empresaKey),
+			tostring(valorInformado),
+			tostring(minimo),
+			tostring(maximo)
+		))
+		Notify(src, ('Valor invalido. Permitido entre R$ %d e R$ %d.'):format(minimo, maximo), 'error')
+		return
+	end
+
+	-- CONFIGURACAO PARA DEVS:
+	-- Ajuste aqui o item de dinheiro sujo usado no seu servidor.
+	-- Exemplo padrao: 'black_money'.
+	local dirtyMoneyItem = (Config and Config.DirtyMoneyItem) or 'black_money'
+
+	local quantidadeDisponivel = exports.ox_inventory:Search(src, 'count', dirtyMoneyItem) or 0
+	if quantidadeDisponivel < valor then
+		Notify(src, 'Voce nao possui dinheiro sujo suficiente.', 'error')
+		return
+	end
+
+	-- ACAO OBRIGATORIA:
+	-- A REMOCAO do item sujo acontece PRIMEIRO; somente depois o saldo do cofre e atualizado.
+	local removeu = exports.ox_inventory:RemoveItem(src, dirtyMoneyItem, valor)
+	if not removeu then
+		Notify(src, 'Falha ao remover o dinheiro sujo do inventario.', 'error')
+		return
+	end
+
+	local dadosAtuais = GetDadosEmpresa(empresaKey)
+	local saldoEmpresaAtual = math.floor(tonumber(dadosAtuais.saldo_empresa) or 0)
+	local saldoClienteAtual = math.floor(tonumber(dadosAtuais.saldo_cliente) or 0)
+	local saldoAtual = saldoEmpresaAtual + saldoClienteAtual
+	local tempoFimAtual = tonumber(dadosAtuais.tempo_fim) or 0
+
+	local taxaEmpresa = tonumber(Config.TaxaEmpresa) or 0.25
+	if taxaEmpresa < 0 then
+		taxaEmpresa = 0
+	elseif taxaEmpresa > 1 then
+		taxaEmpresa = 1
+	end
+
+	local valorEmpresa = math.floor(valor * taxaEmpresa)
+	local valorCliente = valor - valorEmpresa
+	local novoSaldoEmpresa = saldoEmpresaAtual + valorEmpresa
+	local novoSaldoCliente = saldoClienteAtual + valorCliente
+	local novoSaldo = novoSaldoEmpresa + novoSaldoCliente
+
+	-- Regra de negócio: 900s (15min) para cada R$ 5.000.
+	local tempoAdicional = math.floor(valor / 5000) * 900
+	if tempoAdicional < 900 then
+		tempoAdicional = 900
+	end
+
+	local agora = os.time()
+	local novoTempoFim = 0
+	if saldoAtual <= 0 or tempoFimAtual <= agora then
+		novoTempoFim = agora + tempoAdicional
+	else
+		novoTempoFim = tempoFimAtual + tempoAdicional
+	end
+
+	local relatorioAtual = type(dadosAtuais.ultimo_relatorio) == 'table' and dadosAtuais.ultimo_relatorio or {}
+	relatorioAtual.funcionarios = {}
+	relatorioAtual.tempo_fim_epoch = novoTempoFim
+
+	local salvou = SalvarSaldoEmpresa(
+		empresaKey,
+		novoSaldo,
+		relatorioAtual,
+		nil,
+		novoTempoFim,
+		tonumber(dadosAtuais.total_lavado) or 0,
+		novoSaldoEmpresa,
+		novoSaldoCliente
+	)
+	if not salvou then
+		-- Reembolso preventivo em caso de falha no banco.
+		exports.ox_inventory:AddItem(src, dirtyMoneyItem, valor)
+		Notify(src, 'Falha ao atualizar o saldo no banco de dados.', 'error')
+		return
+	end
+
+	Notify(src, ('R$ %d depositado no cofre da empresa.'):format(valor), 'success')
+end)
 
 local function GerarRelatorioFuncionarios(valorTotal)
 	-- Fonte dos nomes usada no relatório fiscal; editar em config.lua.
@@ -623,4 +1049,19 @@ AddEventHandler('onResourceStart', function(resourceName)
 
 	local frameworkText = FRAMEWORK == 'none' and 'incompativel' or FRAMEWORK
 	print(('[%s] Main inicializado. Framework detectado: %s'):format(RESOURCE_NAME, frameworkText))
+	RegistrarTabletFiscalUsavel()
+
+	CreateThread(function()
+		Wait(500)
+		local oxState = GetResourceState('ox_inventory')
+		print(('[%s][DEBUG] Registro do item tablet_fiscal finalizado. ox_inventory=%s | framework=%s'):format(
+			RESOURCE_NAME,
+			tostring(oxState),
+			tostring(frameworkText)
+		))
+	end)
+end)
+
+lib.addCommand('testartablet', { help = 'Forçar abertura do tablet' }, function(source)
+	TriggerClientEvent('wpp_lavagem:abrirTablet', source)
 end)

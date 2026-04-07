@@ -115,6 +115,32 @@ body {
 	font-weight: 700;
 }
 
+.triple-panel {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.8rem;
+}
+
+.panel-item {
+	background: #141414;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	padding: 0.75rem;
+}
+
+.panel-value {
+	font-size: clamp(1rem, 1.5vw, 1.2rem);
+}
+
+.balance-card .timer-label {
+	margin-top: 0.95rem;
+}
+
+.balance-card .timer-value {
+	font-size: clamp(1.05rem, 1.7vw, 1.35rem);
+	font-variant-numeric: tabular-nums;
+}
+
 .table-section {
 	background: var(--panel);
 	border: 1px solid var(--border);
@@ -187,6 +213,7 @@ tbody tr:hover {
 .actions {
 	display: flex;
 	justify-content: flex-end;
+	gap: 0.75rem;
 }
 
 .withdraw-button {
@@ -223,6 +250,7 @@ tbody tr:hover {
 
 	.actions {
 		justify-content: stretch;
+		flex-direction: column;
 	}
 
 	.withdraw-button {
