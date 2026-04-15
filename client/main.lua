@@ -60,15 +60,6 @@ local function GetEmpresagangPermitido(empresaId, empresaConfig)
 	return empresaConfig and empresaConfig.gang or nil
 end
 
-local function GetRanksPermitidos(empresaId, empresaConfig)
-	-- Prioriza a tabela nova de compatibilidade e mantém fallback legado.
-	if Config and Config.RanksPermitidos and Config.RanksPermitidos[empresaId] then
-		return Config.RanksPermitidos[empresaId]
-	end
-
-	return (empresaConfig and empresaConfig.gradesPermitidos) or {}
-end
-
 local function GetPlayerData()
 	-- [Bridge de PlayerData]
 	-- Mantém uma API única para o restante do script, independente da base.
@@ -166,21 +157,6 @@ local function GetPlayergangData()
 	end
 
 	return gangName, gradeValue
-end
-
-local function IsGradePermitido(ranksPermitidos, gradeValue)
-	-- Aceita tanto "01/02" quanto "1/2" conforme variação entre frameworks.
-	local gradeString = tostring(gradeValue or '')
-	local grade2 = tonumber(gradeValue) and string.format('%02d', tonumber(gradeValue)) or gradeString
-
-	for _, permitido in ipairs(ranksPermitidos or {}) do
-		local expected = tostring(permitido)
-		if expected == gradeString or expected == grade2 then
-			return true
-		end
-	end
-
-	return false
 end
 
 local function IsMembroDaEmpresa(empresaId)
@@ -334,8 +310,6 @@ local function AbrirTabletFiscal(_)
 		end
 	end
 
-	print('^3[DEBUG] Gangue: ' .. tostring(playerGang) .. ' | Nível: ' .. tostring(playerGrade) .. ' | Empresa: ' .. tostring(empresaEncontrada) .. '^7')
-
 	if empresaEncontrada == nil then
 		Notify('Empresa invalida', 'error')
 		return
@@ -346,7 +320,6 @@ local function AbrirTabletFiscal(_)
 		return
 	end
 
-	print('^6--- [DEBUG] O Cliente recebeu a ordem para abrir a interface! ---^7')
 	StartTabletAnimation()
 
 	SendNUIMessage({
@@ -360,7 +333,6 @@ local function AbrirTabletFiscal(_)
 
 	nuiOpen = true
 	SetNuiFocus(true, true)
-	print('^6--- [DEBUG] SetNuiFocus foi ativado para a interface do tablet. ---^7')
 	SetNuiFocusKeepInput(false)
 
 	-- Sincroniza dados reais (saldo + cronometro) no servidor ao abrir o tablet.
@@ -368,12 +340,10 @@ local function AbrirTabletFiscal(_)
 end
 
 RegisterNetEvent('wpp_lavagem:abrirTablet', function(empresaId)
-	print('^6[DEBUG] Cliente recebeu comando para abrir!^7')
 	AbrirTabletFiscal(empresaId)
 end)
 
 RegisterNetEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', function(empresaId)
-	print('--- [DEBUG] Recebido evento para abrir o Tablet ---')
 	AbrirTabletFiscal(empresaId)
 end)
 
@@ -544,7 +514,6 @@ AddEventHandler('onResourceStop', function(resourceName)
 	RemoverInteracoesCofres()
 end)
 
-RegisterCommand('abrirnaforca', function()
-	print('^6[DEBUG] Forçando abertura da NUI pelo comando...^7')
+RegisterCommand('abrirtablet', function()
 	TriggerEvent('wpp_lavagem:abrirTablet')
 end, false)

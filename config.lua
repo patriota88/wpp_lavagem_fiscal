@@ -51,19 +51,6 @@ Config.OrganizacoesPermitidas = {
 	restaurante_pearls = 'restaurante_pearls'
 }
 
--- Mapa de ranks/grades permitidos por empresa.
--- Chave: empresaId
--- Valor: lista de grades aceitas (string ou numero).
---
--- Observacao para devs:
--- 1) Este mapa tem prioridade sobre Config.Empresas[empresaId].gradesPermitidos.
--- 2) A comparacao no codigo normaliza formatos como "01", "1" e 1.
-Config.RanksPermitidos = {
-	casino = { '01', '02' },
-	oficina_norte = { '01', '02' },
-	restaurante_pearls = { '01', '02' }
-}
-
 -- Cadastro das empresas participantes do sistema.
 Config.Empresas = {
 	casino = {
@@ -72,8 +59,6 @@ Config.Empresas = {
 		-- Limites específicos desta empresa para depósito no cofre.
 		minDeposit = 5000,
 		maxDeposit = 200000,
-		-- Níveis autorizados a usar o tablet.
-		gradesPermitidos = { '01', '02' },
 		-- Coordenada do cofre financeiro da empresa.
 		cofre = vector3(915.97, 60.61, 80.89)
 	},
@@ -82,7 +67,6 @@ Config.Empresas = {
 		gang = 'oficina_norte',
 		minDeposit = 5000,
 		maxDeposit = 200000,
-		gradesPermitidos = { '01', '02' },
 		cofre = vector3(117.24, 6610.92, 31.87)
 	},
 
@@ -90,19 +74,34 @@ Config.Empresas = {
 		gang = 'restaurante_pearls',
 		minDeposit = 5000,
 		maxDeposit = 200000,
-		gradesPermitidos = { '01', '02' },
 		cofre = vector3(-1826.85, -1195.88, 14.31)
 	}
 }
 
 -- Lista usada para gerar nomes no relatório fiscal.
 Config.FuncionariosFantasmas = {
-	'Joao Vitor',
-	'Mariana Soares',
-	'Carlos Eduardo',
-	'Fernanda Alves',
-	'Rafael Moreira',
-	'Patricia Nogueira',
-	'Bruno Henrique',
-	'Camila Teixeira'
+	'Joao Vitor ',
+	'Mariana Soares ',
+	'Carlos Eduardo ',
+	'Fernanda Alves ',
+	'Rafael Moreira ',
+	'Patricia Nogueira ',
+	'Bruno Henrique ',
+	'Camila Teixeira ',
+	'Lucas Matheus ',
+	'Beatriz Fernandes ',
+	'Gustavo Henrique ',
+	'Juliana Pires ',
+	'Leonardo Cardoso ',
+	'Natalia Barbosa ',
+	'Vinicius Andrade ',
+	'Renata Martins ',
+	'Thiago Oliveira ',
+	'Larissa Souza ',
+	'Felipe Goncalves ',
+	'Vanessa Azevedo ',
+	'Rodrigo Almeida ',
+	'Carolina Ramos ',
+	'Diego Tavares ',
+	'Priscila Mendes '
 }

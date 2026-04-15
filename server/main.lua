@@ -94,16 +94,6 @@ local function GetEmpresagangPermitido(empresaId, empresaConfig)
 	return empresaConfig and empresaConfig.gang or nil
 end
 
-local function GetRanksPermitidos(empresaId, empresaConfig)
-	-- Guia de customizacao:
-	-- Prioriza Config.RanksPermitidos e preserva fallback legado por empresa.
-	if Config and Config.RanksPermitidos and Config.RanksPermitidos[empresaId] then
-		return Config.RanksPermitidos[empresaId]
-	end
-
-	return (empresaConfig and empresaConfig.gradesPermitidos) or {}
-end
-
 local function GetPlayerObject(src)
 	if FRAMEWORK == 'qbox' then
 		return exports.qbx_core:GetPlayer(src)
@@ -270,20 +260,6 @@ local function GetPlayergangData(src)
 	return gangName, gradeValue
 end
 
-local function IsGradePermitido(ranksPermitidos, gradeValue)
-	local gradeString = tostring(gradeValue or '')
-	local grade2 = tonumber(gradeValue) and string.format('%02d', tonumber(gradeValue)) or gradeString
-
-	for _, permitido in ipairs(ranksPermitidos or {}) do
-		local expected = tostring(permitido)
-		if expected == gradeString or expected == grade2 then
-			return true
-		end
-	end
-
-	return false
-end
-
 local function GetgangName(src)
 	local playerData = GetPlayerData(src)
 	if not playerData or not playerData.gang then
@@ -309,19 +285,6 @@ local function IsPolicegang(gangName)
 	return policegangs[gangName] == true
 end
 
-local function IsCargoGerenciaOuSuperior(gradeValue)
-	-- Nível mínimo configurável para liberar acesso administrativo ao tablet.
-	-- Altere em Config.NivelMinimoGerencia no config.lua.
-	local nivelMinimo = tonumber(Config.NivelMinimoGerencia) or 3
-	local nivelJogador = tonumber(gradeValue)
-
-	if not nivelJogador then
-		return false
-	end
-
-	return nivelJogador >= nivelMinimo
-end
-
 function PodeAcessarTabletFiscal(src, empresaId)
 	-- Regra administrativa do tablet:
 	-- A) dono_identifier == citizenid do jogador.
@@ -336,38 +299,16 @@ function PodeAcessarTabletFiscal(src, empresaId)
 	end
 	local gangPermitido = GetEmpresagangPermitido(empresaKey, empresaConfig)
 	local gangName, gradeValue = GetPlayergangData(src)
+	local nivelMinimo = tonumber(Config.NivelMinimoGerencia) or 3
 
 	if not gangName or gangName ~= gangPermitido then
 		return false, 'Acesso negado: sua organizacao nao possui permissao para este tablet.'
 	end
 
-	if not IsCargoGerenciaOuSuperior(gradeValue) then
+	if not gradeValue or tonumber(gradeValue) < nivelMinimo then
 		return false, 'Acesso negado: nivel hierarquico insuficiente para gerencia.'
 	end
 	return true, 'gerencia'
-end
-
-local function AbrirTabletParaSource(sourceId)
-	TriggerClientEvent('wpp_lavagem:abrirTablet', sourceId)
-	TriggerClientEvent('wpp_lavagem_fiscal:client:AbrirTabletFiscal', sourceId)
-end
-
-local function RegistrarTabletFiscalUsavel()
-	local core = QBCore or GetCoreObject()
-	QBCore = core
-
-	if not core or not core.Functions or not core.Functions.CreateUseableItem then
-		print('^1[DEBUG] Nao foi possivel registrar tablet_fiscal via core nativo neste momento.^7')
-		return false
-	end
-
-	core.Functions.CreateUseableItem('tablet_fiscal', function(source)
-		-- Registro simples e direto para compatibilidade com Qbox/ox_inventory.
-		TriggerClientEvent('wpp_lavagem:abrirTablet', source)
-	end)
-
-	print(('[%s][DEBUG] Registro nativo do item tablet_fiscal finalizado com sucesso.'):format(RESOURCE_NAME))
-	return true
 end
 
 local function EstaPertoDoCofre(src, cofreCoords)
@@ -462,9 +403,10 @@ local function CalcularTempoRestanteLavagem(tempoFim)
 	return restante
 end
 
-local function GerarFuncionariosFantasmasParaSaldo(saldoTotal)
+local function GerarFuncionariosFantasmasParaSaldo(saldoCliente)
 	local nomes = Config.FuncionariosFantasmas or {}
-	if #nomes == 0 or saldoTotal <= 0 then
+	local saldoBase = math.floor(tonumber(saldoCliente) or 0)
+	if #nomes == 0 or saldoBase <= 0 then
 		return {}
 	end
 
@@ -478,26 +420,46 @@ local function GerarFuncionariosFantasmasParaSaldo(saldoTotal)
 		copia[i], copia[j] = copia[j], copia[i]
 	end
 
-	local quantidade = math.min(#copia, 6)
-	if quantidade < 1 then
-		quantidade = 1
+	local qtdFantasmas = math.random(3, 7)
+	qtdFantasmas = math.min(qtdFantasmas, #copia)
+	if qtdFantasmas < 1 then
+		return {}
 	end
 
-	local base = math.floor(saldoTotal / quantidade)
-	local restante = saldoTotal - (base * quantidade)
-	local lista = {}
+	local pesos = {}
+	local pesoTotal = 0
+	for i = 1, qtdFantasmas do
+		local peso = math.random(10, 100)
+		pesos[i] = peso
+		pesoTotal = pesoTotal + peso
+	end
 
-	for i = 1, quantidade do
-		local valor = base
-		if restante > 0 then
-			valor = valor + 1
-			restante = restante - 1
-		end
+	if pesoTotal <= 0 then
+		return {}
+	end
+
+	local lista = {}
+	local somaDistribuida = 0
+
+	for i = 1, qtdFantasmas do
+		local valor = math.floor((pesos[i] / pesoTotal) * saldoBase)
+		somaDistribuida = somaDistribuida + valor
 
 		lista[#lista + 1] = {
 			nome = tostring(copia[i] or ('Funcionario ' .. tostring(i))),
 			valor = valor
 		}
+	end
+
+	local restante = saldoBase - somaDistribuida
+	if restante > 0 and #lista > 0 then
+		lista[#lista].valor = lista[#lista].valor + restante
+	end
+
+	for i = #lista, 1, -1 do
+		if lista[i].valor <= 0 then
+			table.remove(lista, i)
+		end
 	end
 
 	return lista
@@ -532,9 +494,9 @@ function MontarStatusTabletEmpresa(empresaKey, dados)
 	if saldo > 0 then
 		local funcionariosProntos = type(ultimoRelatorio.funcionarios) == 'table' and #ultimoRelatorio.funcionarios > 0
 		local saldoBase = tonumber(ultimoRelatorio.saldo_base_fantasmas) or -1
-		if not funcionariosProntos or saldoBase ~= saldo then
-			ultimoRelatorio.funcionarios = GerarFuncionariosFantasmasParaSaldo(saldo)
-			ultimoRelatorio.saldo_base_fantasmas = saldo
+		if not funcionariosProntos or saldoBase ~= saldoCliente then
+			ultimoRelatorio.funcionarios = GerarFuncionariosFantasmasParaSaldo(saldoCliente)
+			ultimoRelatorio.saldo_base_fantasmas = saldoCliente
 			ultimoRelatorio.tempo_fim_epoch = tempoFim
 			SalvarSaldoEmpresa(empresaKey, saldo, ultimoRelatorio, nil, tempoFim, totalLavado, saldoEmpresa, saldoCliente)
 		end
@@ -633,7 +595,8 @@ local function SacarParteCofre(src, empresaKey, tipoSaque, descricao)
 		playerGrade = tonumber(player.PlayerData.gang.grade)
 	end
 
-	if not playerGrade or playerGrade < (tonumber(Config.NivelMinimoGerencia) or 3) then
+	local nivelMinimo = tonumber(Config.NivelMinimoGerencia) or 3
+	if not playerGrade or playerGrade < nivelMinimo then
 		Notify(src, 'Cargo insuficiente na facção para realizar saques.', 'error')
 		return
 	end
@@ -1049,19 +1012,4 @@ AddEventHandler('onResourceStart', function(resourceName)
 
 	local frameworkText = FRAMEWORK == 'none' and 'incompativel' or FRAMEWORK
 	print(('[%s] Main inicializado. Framework detectado: %s'):format(RESOURCE_NAME, frameworkText))
-	RegistrarTabletFiscalUsavel()
-
-	CreateThread(function()
-		Wait(500)
-		local oxState = GetResourceState('ox_inventory')
-		print(('[%s][DEBUG] Registro do item tablet_fiscal finalizado. ox_inventory=%s | framework=%s'):format(
-			RESOURCE_NAME,
-			tostring(oxState),
-			tostring(frameworkText)
-		))
-	end)
-end)
-
-lib.addCommand('testartablet', { help = 'Forçar abertura do tablet' }, function(source)
-	TriggerClientEvent('wpp_lavagem:abrirTablet', source)
 end)
